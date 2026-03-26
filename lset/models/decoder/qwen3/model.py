@@ -62,18 +62,30 @@ class Qwen3Decoder(nn.Module):
         hidden_states = self.embed_tokens(input_ids)
         B, S = input_ids.shape
 
-        cos, sin = self.rotary_emb(S, hidden_states.device)
+        # Use input_ids.device for RoPE/mask creation since hidden_states
+        # may be a DTensor under SequenceParallel
+        device = input_ids.device
+        cos, sin = self.rotary_emb(S, device)
         cos = cos.to(hidden_states.dtype)
         sin = sin.to(hidden_states.dtype)
 
         causal_mask = None
         if attention_mask is not None:
-            causal_mask = self._make_causal_mask(attention_mask, hidden_states.dtype, hidden_states.device)
+            causal_mask = self._make_causal_mask(attention_mask, cos.dtype, device)
 
         for layer in self.layers:
             hidden_states = layer(hidden_states, cos, sin, causal_mask)
 
         hidden_states = self.norm(hidden_states)
+
+        # When SequenceParallel is active, hidden_states is a Shard(1) DTensor.
+        # Pooling needs the full sequence, so gather back to a regular tensor.
+        try:
+            from torch.distributed._tensor import DTensor
+            if isinstance(hidden_states, DTensor):
+                hidden_states = hidden_states.full_tensor()
+        except ImportError:
+            pass
 
         result: dict[str, torch.Tensor] = {"hidden_states": hidden_states}
         if return_lm_logits:

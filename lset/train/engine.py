@@ -104,8 +104,10 @@ class TrainingEngine:
         # Apply parallelism
         if tp_size > 1:
             # 2D parallelism (TP + optional FSDP)
+            # Enable SequenceParallel for padded mode (not packed)
             pconfig = ParallelConfig(
                 dp_size=dp_size, tp_size=tp_size, mp_dtype=torch.bfloat16,
+                use_sequence_parallel=not packed,
             )
             self.model, self.mesh = build_parallel_model(
                 self.model, config, pconfig,
@@ -168,13 +170,22 @@ class TrainingEngine:
             from torch.utils.data.distributed import DistributedSampler
             sampler = DistributedSampler(dataset, num_replicas=dp_size, rank=self.rank)
 
+        # When using TP without DP, all TP ranks must see the same data.
+        # Use a fixed-seed generator so shuffle produces identical order on all ranks.
+        shuffle = sampler is None
+        generator = None
+        if shuffle and tp_size > 1:
+            generator = torch.Generator()
+            generator.manual_seed(42)
+
         self.dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=(sampler is None),
+            shuffle=shuffle,
             collate_fn=actual_collator,
             sampler=sampler,
             drop_last=True,
+            generator=generator,
         )
         self.device = device
 

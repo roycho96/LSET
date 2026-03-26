@@ -32,6 +32,7 @@ class ParallelConfig:
     mp_dtype: torch.dtype = torch.bfloat16
     activation_checkpoint: bool = False
     ac_ratio: float = 1.0
+    use_sequence_parallel: bool = False
 
 
 def setup_fsdp2(model: nn.Module, dp_size: int):
@@ -74,7 +75,7 @@ def build_parallel_model(
     if parallel_config.tp_size > 1:
         from lset.models.decoder.qwen3.parallel_plan import get_tp_plan
         tp_mesh = mesh["tp"]
-        plan = get_tp_plan(config)
+        plan = get_tp_plan(config, use_sequence_parallel=parallel_config.use_sequence_parallel)
         apply_tp(model, tp_mesh, plan)
 
     # Step 2: Activation Checkpointing
