@@ -25,6 +25,39 @@ class Qwen3Decoder(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         return_lm_logits: bool = False,
+        *,
+        position_ids: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Unified forward supporting both padded and packed modes.
+
+        Padded mode (default): input_ids [B, S], attention_mask [B, S].
+        Packed mode: input_ids (T,), position_ids (T,), cu_seqlens (N+1,), max_seqlen int.
+        """
+        if cu_seqlens is not None:
+            return self._forward_packed(input_ids, position_ids, cu_seqlens, max_seqlen, return_lm_logits)
+        return self._forward_padded(input_ids, attention_mask, return_lm_logits)
+
+    def forward_packed(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        return_lm_logits: bool = False,
+    ) -> dict[str, torch.Tensor]:
+        """Convenience method — routes through forward() for FSDP2 compatibility."""
+        return self(
+            input_ids, return_lm_logits=return_lm_logits,
+            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+        )
+
+    def _forward_padded(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        return_lm_logits: bool,
     ) -> dict[str, torch.Tensor]:
         hidden_states = self.embed_tokens(input_ids)
         B, S = input_ids.shape
@@ -33,7 +66,6 @@ class Qwen3Decoder(nn.Module):
         cos = cos.to(hidden_states.dtype)
         sin = sin.to(hidden_states.dtype)
 
-        # Build causal + padding mask for SDPA
         causal_mask = None
         if attention_mask is not None:
             causal_mask = self._make_causal_mask(attention_mask, hidden_states.dtype, hidden_states.device)
@@ -45,7 +77,33 @@ class Qwen3Decoder(nn.Module):
 
         result: dict[str, torch.Tensor] = {"hidden_states": hidden_states}
         if return_lm_logits:
-            # Tied embeddings: reuse embed_tokens weight as lm_head
+            result["lm_logits"] = F.linear(hidden_states, self.embed_tokens.weight)
+        return result
+
+    def _forward_packed(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        return_lm_logits: bool,
+    ) -> dict[str, torch.Tensor]:
+        hidden_states = self.embed_tokens(input_ids)  # (T, H)
+
+        cos, sin = self.rotary_emb(max_seqlen, hidden_states.device)
+        cos = cos.squeeze(0).squeeze(0).to(hidden_states.dtype)  # (max_seqlen, head_dim)
+        sin = sin.squeeze(0).squeeze(0).to(hidden_states.dtype)
+
+        for layer in self.layers:
+            hidden_states = layer(
+                hidden_states, cos, sin,
+                position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            )
+
+        hidden_states = self.norm(hidden_states)
+
+        result: dict[str, torch.Tensor] = {"hidden_states": hidden_states}
+        if return_lm_logits:
             result["lm_logits"] = F.linear(hidden_states, self.embed_tokens.weight)
         return result
 

@@ -22,11 +22,23 @@ class Qwen3Block(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        *,
+        position_ids: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
     ) -> torch.Tensor:
+        """Unified forward for both padded and packed modes."""
+        packed = cu_seqlens is not None
+
         # Pre-norm attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
+        if packed:
+            hidden_states = self.self_attn.forward_packed(
+                hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen
+            )
+        else:
+            hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
         hidden_states = residual + hidden_states
 
         # Pre-norm MLP
@@ -36,3 +48,18 @@ class Qwen3Block(nn.Module):
         hidden_states = residual + hidden_states
 
         return hidden_states
+
+    def forward_packed(
+        self,
+        hidden_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+    ) -> torch.Tensor:
+        """Convenience method — routes through forward() for FSDP2 compatibility."""
+        return self(
+            hidden_states, cos, sin,
+            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+        )

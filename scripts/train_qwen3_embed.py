@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.02)
     parser.add_argument("--max_length", type=int, default=256)
     parser.add_argument("--log_interval", type=int, default=1)
+    parser.add_argument("--packed", action="store_true", help="Use sequence packing")
+    parser.add_argument("--grad_cache", action="store_true", help="Use GradCache")
+    parser.add_argument("--gc_chunk_size", type=int, default=16, help="GradCache chunk size")
     args = parser.parse_args()
 
     # Load tokenizer
@@ -78,6 +81,9 @@ def main():
         max_steps=args.max_steps,
         temperature=args.temperature,
         log_interval=args.log_interval,
+        packed=args.packed,
+        use_grad_cache=args.grad_cache,
+        gc_chunk_size=args.gc_chunk_size,
     )
 
     engine.train()

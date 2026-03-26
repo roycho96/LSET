@@ -85,6 +85,110 @@ class Qwen3Attention(nn.Module):
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(attn_out)
 
+    def forward_packed(
+        self,
+        hidden_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+    ) -> torch.Tensor:
+        """Packed forward path.
+
+        Args:
+            hidden_states: (total_tokens, H)
+            cos, sin: (max_seqlen, head_dim)
+            position_ids: (total_tokens,)
+            cu_seqlens: (num_seqs + 1,) int32
+            max_seqlen: int
+        """
+        T, _ = hidden_states.shape
+        q = self.q_proj(hidden_states).view(T, self.num_heads, self.head_dim)
+        k = self.k_proj(hidden_states).view(T, self.num_kv_heads, self.head_dim)
+        v = self.v_proj(hidden_states).view(T, self.num_kv_heads, self.head_dim)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        # Position-indexed RoPE
+        cos_pos = cos[position_ids].unsqueeze(1)  # (T, 1, D)
+        sin_pos = sin[position_ids].unsqueeze(1)
+        q = (q * cos_pos) + (_rotate_half(q) * sin_pos)
+        k = (k * cos_pos) + (_rotate_half(k) * sin_pos)
+
+        attn_out = _flash_or_sdpa_packed(
+            q, k, v, cu_seqlens, max_seqlen,
+            self.num_heads, self.num_kv_heads, self.num_kv_groups,
+        )
+
+        attn_out = attn_out.reshape(T, -1)
+        return self.o_proj(attn_out)
+
+
+def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
+                          num_heads, num_kv_heads, num_kv_groups):
+    """Try flash_attn_varlen_func, fall back to SDPA if unavailable or unsupported dtype."""
+    if q.dtype in (torch.float16, torch.bfloat16):
+        try:
+            from flash_attn import flash_attn_varlen_func
+            return flash_attn_varlen_func(
+                q, k, v,
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                causal=True,
+            )
+        except ImportError:
+            pass
+    return _sdpa_packed_fallback(
+        q, k, v, cu_seqlens, max_seqlen,
+        num_heads, num_kv_heads, num_kv_groups,
+    )
+
+
+def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen,
+                          num_heads, num_kv_heads, num_kv_groups):
+    """SDPA fallback for packed sequences when flash_attn is unavailable.
+
+    Builds a block-diagonal causal mask and runs SDPA on (1, T, ...) tensors.
+    """
+    T = q.shape[0]
+    device = q.device
+    dtype = q.dtype
+
+    # Build block-diagonal causal mask: (T, T)
+    # Each sequence attends only to itself, causally
+    mask = torch.full((T, T), float("-inf"), dtype=dtype, device=device)
+    for i in range(cu_seqlens.shape[0] - 1):
+        s = int(cu_seqlens[i])
+        e = int(cu_seqlens[i + 1])
+        seq_len = e - s
+        # Causal within this sequence block
+        causal_block = torch.triu(
+            torch.full((seq_len, seq_len), float("-inf"), dtype=dtype, device=device),
+            diagonal=1,
+        )
+        mask[s:e, s:e] = causal_block
+
+    attn_mask = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, T, T)
+
+    # Reshape to (1, T, num_heads, head_dim) → (1, num_heads, T, head_dim)
+    q = q.unsqueeze(0).transpose(1, 2)  # (1, num_heads, T, D)
+    k = k.unsqueeze(0).transpose(1, 2)  # (1, num_kv_heads, T, D)
+    v = v.unsqueeze(0).transpose(1, 2)
+
+    # GQA expand
+    if num_kv_groups > 1:
+        k = k.repeat_interleave(num_kv_groups, dim=1)
+        v = v.repeat_interleave(num_kv_groups, dim=1)
+
+    attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    # (1, num_heads, T, D) → (T, num_heads, D)
+    attn_out = attn_out.squeeze(0).transpose(0, 1)
+    return attn_out
+
 
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size: int, eps: float = 1e-6):
