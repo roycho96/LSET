@@ -62,19 +62,23 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
 
-        q = self.q_proj(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).view(B, S, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).view(B, S, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        # Use -1 for num_heads to handle TP (local heads = global / tp_size)
+        q = self.q_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # GQA: expand kv heads
-        if self.num_kv_groups > 1:
-            k = k.repeat_interleave(self.num_kv_groups, dim=1)
-            v = v.repeat_interleave(self.num_kv_groups, dim=1)
+        # GQA: expand kv heads (use actual local head counts)
+        local_q_heads = q.shape[1]
+        local_kv_heads = k.shape[1]
+        local_kv_groups = local_q_heads // local_kv_heads
+        if local_kv_groups > 1:
+            k = k.repeat_interleave(local_kv_groups, dim=1)
+            v = v.repeat_interleave(local_kv_groups, dim=1)
 
         # Use SDPA with causal mask or custom mask
         if attention_mask is not None:
@@ -104,9 +108,10 @@ class Qwen3Attention(nn.Module):
             max_seqlen: int
         """
         T, _ = hidden_states.shape
-        q = self.q_proj(hidden_states).view(T, self.num_heads, self.head_dim)
-        k = self.k_proj(hidden_states).view(T, self.num_kv_heads, self.head_dim)
-        v = self.v_proj(hidden_states).view(T, self.num_kv_heads, self.head_dim)
+        # Use -1 for num_heads to handle TP (local heads)
+        q = self.q_proj(hidden_states).view(T, -1, self.head_dim)
+        k = self.k_proj(hidden_states).view(T, -1, self.head_dim)
+        v = self.v_proj(hidden_states).view(T, -1, self.head_dim)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
@@ -117,9 +122,12 @@ class Qwen3Attention(nn.Module):
         q = (q * cos_pos) + (_rotate_half(q) * sin_pos)
         k = (k * cos_pos) + (_rotate_half(k) * sin_pos)
 
+        local_q_heads = q.shape[1]
+        local_kv_heads = k.shape[1]
+        local_kv_groups = local_q_heads // local_kv_heads
         attn_out = _flash_or_sdpa_packed(
             q, k, v, cu_seqlens, max_seqlen,
-            self.num_heads, self.num_kv_heads, self.num_kv_groups,
+            local_q_heads, local_kv_heads, local_kv_groups,
         )
 
         attn_out = attn_out.reshape(T, -1)

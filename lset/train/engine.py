@@ -8,14 +8,31 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from lset.models import get_model_spec
 from lset.tasks.bi_encoder import BiEncoderTask
 from lset.tasks.grad_cache import GradCacheWrapper
-from lset.data.collator import LeftPadCollator
-from lset.data.packed_collator import PackedCollator
-from lset.distributed.parallel import setup_fsdp2
+from lset.data.collator import LeftPadCollator, EmbeddingCollator
+from lset.distributed.parallel import setup_fsdp2, build_parallel_model, ParallelConfig
+from lset.train.scheduler import build_scheduler
+from lset.core.checkpoint import save_checkpoint, load_checkpoint
+from lset.core.logging import TrainLogger
+
+
+def _clip_grad_norm_tp(model: nn.Module, max_norm: float):
+    """Clip gradients for TP models, avoiding mixed-mesh DTensor issues."""
+    total_norm_sq = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            # Convert to plain float to avoid DTensor mesh mismatch
+            param_norm = p.grad.detach().float().norm(2.0).item()
+            total_norm_sq += param_norm ** 2
+    total_norm = total_norm_sq ** 0.5
+    clip_coef = max_norm / max(total_norm, 1e-6)
+    if clip_coef < 1.0:
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.detach().mul_(clip_coef)
 
 
 class TrainingEngine:
@@ -25,6 +42,7 @@ class TrainingEngine:
         model_path: str,
         dataset,
         dp_size: int = 1,
+        tp_size: int = 1,
         batch_size: int = 8,
         lr: float = 1e-5,
         max_steps: int = 1000,
@@ -35,20 +53,40 @@ class TrainingEngine:
         packed: bool = False,
         use_grad_cache: bool = False,
         gc_chunk_size: int = 16,
+        gradient_accumulation_steps: int = 1,
+        save_steps: int = 0,
+        output_dir: str = "./output",
+        resume_from: str | None = None,
+        scheduler_type: str = "cosine",
+        warmup_steps: int = 0,
+        use_wandb: bool = False,
+        wandb_project: str = "lset",
+        use_label_matrix: bool = False,
+        collator=None,
     ):
         self.dp_size = dp_size
+        self.tp_size = tp_size
         self.batch_size = batch_size
         self.max_steps = max_steps
         self.grad_clip = grad_clip
         self.log_interval = log_interval
         self.use_grad_cache = use_grad_cache
+        self.grad_accum_steps = gradient_accumulation_steps
+        self.save_steps = save_steps
+        self.output_dir = output_dir
+        self.resume_from = resume_from
+        self.use_label_matrix = use_label_matrix
+        self.needs_dist_cleanup = False
 
         self.rank = int(os.environ.get("RANK", 0))
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-        if dp_size > 1:
+        needs_dist = dp_size > 1 or tp_size > 1
+        if needs_dist:
             import torch.distributed as dist
-            dist.init_process_group("nccl")
+            if not dist.is_initialized():
+                dist.init_process_group("nccl")
+                self.needs_dist_cleanup = True
             torch.cuda.set_device(self.local_rank)
 
         device = torch.device(f"cuda:{self.local_rank}")
@@ -63,8 +101,17 @@ class TrainingEngine:
         self.model.load_state_dict(state_dict, strict=True)
         self.model = self.model.to(device=device, dtype=torch.bfloat16)
 
-        # FSDP2
-        if dp_size > 1:
+        # Apply parallelism
+        if tp_size > 1:
+            # 2D parallelism (TP + optional FSDP)
+            pconfig = ParallelConfig(
+                dp_size=dp_size, tp_size=tp_size, mp_dtype=torch.bfloat16,
+            )
+            self.model, self.mesh = build_parallel_model(
+                self.model, config, pconfig,
+            )
+        elif dp_size > 1:
+            # FSDP2 only (legacy path)
             self.model, self.mesh = setup_fsdp2(self.model, dp_size)
 
         # Task
@@ -81,16 +128,40 @@ class TrainingEngine:
 
         # Optimizer
         self.optimizer = AdamW(self.model.parameters(), lr=lr, fused=True)
-        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=max_steps)
+
+        # Scheduler
+        self.scheduler = build_scheduler(
+            self.optimizer, scheduler_type, max_steps, warmup_steps,
+        )
+
+        # Logger
+        self.logger = TrainLogger(
+            use_wandb=use_wandb,
+            project=wandb_project,
+            config={"model": model_name, "batch_size": batch_size, "lr": lr},
+        )
 
         # Collator
-        if packed:
-            collator = PackedCollator()
+        is_new_format = hasattr(dataset, 'format')
+        if collator is not None:
+            actual_collator = collator
+        elif is_new_format:
+            from lset.tokenization.loader import load_tokenizer
+            tokenizer = load_tokenizer(model_path)
+            actual_collator = EmbeddingCollator(
+                tokenizer=tokenizer,
+                max_length=dataset.max_length,
+                packed=packed,
+            )
+            self.use_label_matrix = True
+        elif packed:
+            from lset.data.packed_collator import PackedCollator
+            actual_collator = PackedCollator()
         else:
             with open(f"{model_path}/config.json") as f:
                 hf_config = json.load(f)
             pad_token_id = hf_config.get("eos_token_id", config.vocab_size - 1)
-            collator = LeftPadCollator(pad_token_id=pad_token_id)
+            actual_collator = LeftPadCollator(pad_token_id=pad_token_id)
 
         sampler = None
         if dp_size > 1:
@@ -101,7 +172,7 @@ class TrainingEngine:
             dataset,
             batch_size=batch_size,
             shuffle=(sampler is None),
-            collate_fn=collator,
+            collate_fn=actual_collator,
             sampler=sampler,
             drop_last=True,
         )
@@ -113,7 +184,17 @@ class TrainingEngine:
 
     def train(self):
         self.model.train()
-        step = 0
+        start_step = 0
+
+        # Resume from checkpoint
+        if self.resume_from is not None:
+            start_step = load_checkpoint(self.model, self.optimizer, self.resume_from)
+            if self.rank == 0:
+                print(f"Resumed from step {start_step}")
+
+        step = start_step
+        self.optimizer.zero_grad()
+
         while step < self.max_steps:
             for batch in self.dataloader:
                 if step >= self.max_steps:
@@ -121,28 +202,51 @@ class TrainingEngine:
 
                 query_batch = self._to_device(batch["query"])
                 doc_batch = self._to_device(batch["doc"])
+                labels = batch.get("labels")
+                scores = batch.get("scores")
 
                 if self.use_grad_cache:
-                    loss = self.grad_cache(self.model, query_batch, doc_batch)
+                    loss = self.grad_cache(self.model, query_batch, doc_batch,
+                                           labels=labels, scores=scores)
                 else:
                     neg_batch = None
                     if "neg" in batch:
                         neg_batch = self._to_device(batch["neg"])
-                    out = self.task(self.model, query_batch, doc_batch, neg_batch)
+                    out = self.task(self.model, query_batch, doc_batch, neg_batch,
+                                    labels=labels, scores=scores)
                     loss = out["loss"]
-                    loss.backward()
+                    scaled_loss = loss / self.grad_accum_steps
+                    scaled_loss.backward()
 
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
+                if (step + 1) % self.grad_accum_steps == 0:
+                    if self.tp_size > 1:
+                        _clip_grad_norm_tp(self.model, self.grad_clip)
+                    else:
+                        nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.grad_clip,
+                        )
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
 
                 loss_val = loss.item() if isinstance(loss, torch.Tensor) else loss
                 if self.rank == 0 and step % self.log_interval == 0:
-                    print(f"step={step} loss={loss_val:.4f}")
+                    metrics = {
+                        "loss": loss_val,
+                        "lr": self.scheduler.get_last_lr()[0],
+                    }
+                    self.logger.log(metrics, step)
+
+                # Checkpoint
+                if (self.save_steps > 0 and (step + 1) % self.save_steps == 0):
+                    save_checkpoint(self.model, self.optimizer, step + 1, self.output_dir)
+                    if self.rank == 0:
+                        print(f"Saved checkpoint at step {step + 1}")
 
                 step += 1
 
-        if self.dp_size > 1:
+        if self.needs_dist_cleanup:
             import torch.distributed as dist
             dist.destroy_process_group()
+
+        self.logger.finish()

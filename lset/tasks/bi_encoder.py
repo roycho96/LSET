@@ -7,7 +7,32 @@ from .pooling import pool
 from .packed_pooling import packed_pool
 from .gather import gather_with_grad
 from .losses.infonce import infonce_loss
+from .losses.contrastive import contrastive_loss
 from .losses.matryoshka import matryoshka_loss
+
+
+def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
+                               fill: float = 0.0) -> torch.Tensor:
+    """Expand local label matrix to match gathered embedding sizes.
+
+    When using gather_with_grad in multi-GPU, embeddings grow but labels stay local.
+    This creates a full (total_q, total_d) matrix where the local labels are placed
+    in the correct block-diagonal position, and other entries are filled with `fill`.
+    """
+    local_q, local_d = labels.shape
+    if local_q == total_q and local_d == total_d:
+        return labels
+
+    import torch.distributed as dist
+    if not dist.is_initialized():
+        return labels
+
+    rank = dist.get_rank()
+    full = torch.full((total_q, total_d), fill, device=labels.device, dtype=labels.dtype)
+    q_start = rank * local_q
+    d_start = rank * local_d
+    full[q_start:q_start + local_q, d_start:d_start + local_d] = labels
+    return full
 
 
 class BiEncoderTask(nn.Module):
@@ -38,7 +63,8 @@ class BiEncoderTask(nn.Module):
         return packed_pool(out["hidden_states"], batch["cu_seqlens"], self.pooling, norm)
 
     def forward(self, model: nn.Module, query_batch: dict, doc_batch: dict,
-                neg_batch: dict | None = None) -> dict:
+                neg_batch: dict | None = None, labels: torch.Tensor | None = None,
+                scores: torch.Tensor | None = None) -> dict:
         q_emb = self.encode(model, query_batch)
         d_emb = self.encode(model, doc_batch)
 
@@ -51,9 +77,25 @@ class BiEncoderTask(nn.Module):
             n_emb = gather_with_grad(n_emb)
             d_emb = torch.cat([d_emb, n_emb], dim=0)
 
-        if self.matryoshka_dims is not None:
-            loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature)
+        if labels is not None:
+            # Label-matrix-aware path
+            labels = labels.to(q_emb.device)
+            labels = _expand_labels_for_gather(labels, q_emb.shape[0], d_emb.shape[0])
+            s = None
+            if scores is not None:
+                s = scores.to(q_emb.device)
+                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
+                                               fill=float("-inf"))
+            if self.matryoshka_dims:
+                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims,
+                                       self.temperature, labels)
+            else:
+                loss = contrastive_loss(q_emb, d_emb, labels, self.temperature, s)
         else:
-            loss = infonce_loss(q_emb, d_emb, self.temperature)
+            # Legacy: diagonal positive (backward compatible)
+            if self.matryoshka_dims is not None:
+                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature)
+            else:
+                loss = infonce_loss(q_emb, d_emb, self.temperature)
 
         return {"loss": loss, "query_embeds": q_emb.detach(), "doc_embeds": d_emb.detach()}

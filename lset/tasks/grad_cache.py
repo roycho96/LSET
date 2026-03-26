@@ -7,6 +7,8 @@ import torch
 from .bi_encoder import BiEncoderTask
 from .gather import gather_with_grad
 from .losses.infonce import infonce_loss
+from .losses.contrastive import contrastive_loss
+from .losses.matryoshka import matryoshka_loss
 
 
 class GradCacheWrapper:
@@ -22,7 +24,7 @@ class GradCacheWrapper:
         self.task = task
         self.chunk_size = chunk_size
 
-    def __call__(self, model, query_batch, doc_batch):
+    def __call__(self, model, query_batch, doc_batch, labels=None, scores=None):
         # Step 1: no_grad encode
         with torch.no_grad():
             q_emb = self.task.encode(model, query_batch)
@@ -35,7 +37,28 @@ class GradCacheWrapper:
         # Step 2: loss on cached embeddings → get embedding grads
         q_emb = q_emb.detach().requires_grad_(True)
         d_emb = d_emb.detach().requires_grad_(True)
-        loss = infonce_loss(q_emb, d_emb, self.task.temperature)
+
+        if labels is not None:
+            from .bi_encoder import _expand_labels_for_gather
+            labels = labels.to(q_emb.device)
+            labels = _expand_labels_for_gather(labels, q_emb.shape[0], d_emb.shape[0])
+            s = None
+            if scores is not None:
+                s = scores.to(q_emb.device)
+                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
+                                               fill=float("-inf"))
+            if self.task.matryoshka_dims:
+                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
+                                       self.task.temperature, labels)
+            else:
+                loss = contrastive_loss(q_emb, d_emb, labels, self.task.temperature, s)
+        else:
+            if self.task.matryoshka_dims:
+                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
+                                       self.task.temperature)
+            else:
+                loss = infonce_loss(q_emb, d_emb, self.task.temperature)
+
         loss.backward()
         q_grad = q_emb.grad.clone()
         d_grad = d_emb.grad.clone()
@@ -56,7 +79,7 @@ class GradCacheWrapper:
         B = batch["input_ids"].shape[0]
         for s in range(0, B, self.chunk_size):
             e = min(s + self.chunk_size, B)
-            chunk = {k: v[s:e] for k, v in batch.items()}
+            chunk = {k: v[s:e] for k, v in batch.items() if isinstance(v, torch.Tensor)}
             emb = self.task.encode(model, chunk)
             (emb * grads[s:e]).sum().backward()
 
