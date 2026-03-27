@@ -63,7 +63,30 @@ class TrainingEngine:
         wandb_project: str = "lset",
         use_label_matrix: bool = False,
         collator=None,
+        # LoRA/QLoRA
+        lora: bool = False,
+        lora_r: int = 8,
+        lora_alpha: float = 16.0,
+        lora_dropout: float = 0.0,
+        lora_targets: list[str] | None = None,
+        qlora: bool = False,
+        qlora_block_size: int = 64,
+        # FP8 training
+        fp8: bool = False,
+        fp8_recipe: str = "rowwise",
     ):
+        # Validate incompatible options
+        if fp8 and (lora or qlora):
+            raise ValueError(
+                "FP8 training + LoRA is not supported (torchtune#2833). "
+                "Use FP8 for full fine-tuning or LoRA/QLoRA without FP8."
+            )
+        if qlora and tp_size > 1:
+            raise ValueError(
+                "QLoRA + Tensor Parallelism is not supported (NF4 + TP not "
+                "implemented in torchao). Use LoRA + TP or QLoRA without TP."
+            )
+
         self.dp_size = dp_size
         self.tp_size = tp_size
         self.batch_size = batch_size
@@ -77,6 +100,8 @@ class TrainingEngine:
         self.resume_from = resume_from
         self.use_label_matrix = use_label_matrix
         self.needs_dist_cleanup = False
+        self.use_lora = lora or qlora
+        self.use_fp8 = fp8
 
         self.rank = int(os.environ.get("RANK", 0))
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -101,6 +126,30 @@ class TrainingEngine:
         self.model.load_state_dict(state_dict, strict=True)
         self.model = self.model.to(device=device, dtype=torch.bfloat16)
 
+        # Apply FP8 (before TP/FSDP, after weights loaded)
+        if fp8:
+            from lset.distributed.fp8 import apply_fp8_training
+            apply_fp8_training(self.model, recipe=fp8_recipe)
+
+        # Apply QLoRA (quantize then LoRA — before TP/FSDP)
+        lora_target_list = lora_targets if lora_targets else None
+        if qlora:
+            from lset.modules.qlora import apply_qlora
+            apply_qlora(
+                self.model, r=lora_r, alpha=lora_alpha,
+                target_modules=lora_target_list or ("q_proj", "k_proj", "v_proj",
+                    "o_proj", "gate_proj", "up_proj", "down_proj"),
+                dropout=lora_dropout, block_size=qlora_block_size,
+            )
+        elif lora:
+            from lset.modules.lora import apply_lora
+            apply_lora(
+                self.model, r=lora_r, alpha=lora_alpha,
+                target_modules=lora_target_list or ("q_proj", "k_proj", "v_proj",
+                    "o_proj", "gate_proj", "up_proj", "down_proj"),
+                dropout=lora_dropout,
+            )
+
         # Apply parallelism
         if tp_size > 1:
             # 2D parallelism (TP + optional FSDP)
@@ -108,6 +157,7 @@ class TrainingEngine:
             pconfig = ParallelConfig(
                 dp_size=dp_size, tp_size=tp_size, mp_dtype=torch.bfloat16,
                 use_sequence_parallel=not packed,
+                use_lora=self.use_lora,
             )
             self.model, self.mesh = build_parallel_model(
                 self.model, config, pconfig,
@@ -128,8 +178,13 @@ class TrainingEngine:
         if use_grad_cache:
             self.grad_cache = GradCacheWrapper(self.task, chunk_size=gc_chunk_size)
 
-        # Optimizer
-        self.optimizer = AdamW(self.model.parameters(), lr=lr, fused=True)
+        # Optimizer — only LoRA params when using LoRA/QLoRA
+        if self.use_lora:
+            from lset.modules.lora import get_lora_params
+            opt_params = get_lora_params(self.model)
+        else:
+            opt_params = list(self.model.parameters())
+        self.optimizer = AdamW(opt_params, lr=lr, fused=True)
 
         # Scheduler
         self.scheduler = build_scheduler(
