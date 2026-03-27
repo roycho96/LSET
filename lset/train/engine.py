@@ -12,7 +12,7 @@ from torch.optim import AdamW
 from lset.models import get_model_spec
 from lset.tasks.bi_encoder import BiEncoderTask
 from lset.tasks.grad_cache import GradCacheWrapper
-from lset.data.collator import LeftPadCollator, EmbeddingCollator
+from lset.data.collator import LeftPadCollator, RightPadCollator, EmbeddingCollator
 from lset.distributed.parallel import setup_fsdp2, build_parallel_model, ParallelConfig
 from lset.train.scheduler import build_scheduler
 from lset.core.checkpoint import save_checkpoint, load_checkpoint
@@ -217,8 +217,11 @@ class TrainingEngine:
         else:
             with open(f"{model_path}/config.json") as f:
                 hf_config = json.load(f)
-            pad_token_id = hf_config.get("eos_token_id", config.vocab_size - 1)
-            actual_collator = LeftPadCollator(pad_token_id=pad_token_id)
+            pad_token_id = hf_config.get("pad_token_id") or hf_config.get("eos_token_id", config.vocab_size - 1)
+            if spec.default_padding_side == "right":
+                actual_collator = RightPadCollator(pad_token_id=pad_token_id)
+            else:
+                actual_collator = LeftPadCollator(pad_token_id=pad_token_id)
 
         sampler = None
         if dp_size > 1:

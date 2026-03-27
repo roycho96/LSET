@@ -135,7 +135,8 @@ class Qwen3Attention(nn.Module):
 
 
 def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
-                          num_heads, num_kv_heads, num_kv_groups):
+                          num_heads, num_kv_heads, num_kv_groups,
+                          causal=True):
     """Try flash_attn_varlen_func, fall back to SDPA if unavailable or unsupported dtype."""
     if q.dtype in (torch.float16, torch.bfloat16):
         try:
@@ -146,39 +147,47 @@ def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
                 cu_seqlens_k=cu_seqlens,
                 max_seqlen_q=max_seqlen,
                 max_seqlen_k=max_seqlen,
-                causal=True,
+                causal=causal,
             )
         except ImportError:
             pass
     return _sdpa_packed_fallback(
         q, k, v, cu_seqlens, max_seqlen,
         num_heads, num_kv_heads, num_kv_groups,
+        causal=causal,
     )
 
 
 def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen,
-                          num_heads, num_kv_heads, num_kv_groups):
+                          num_heads, num_kv_heads, num_kv_groups,
+                          causal=True):
     """SDPA fallback for packed sequences when flash_attn is unavailable.
 
-    Builds a block-diagonal causal mask and runs SDPA on (1, T, ...) tensors.
+    Builds a block-diagonal mask and runs SDPA on (1, T, ...) tensors.
+    When causal=True, applies causal (lower triangular) masking within each block.
+    When causal=False (encoder-style), applies full bidirectional attention within blocks.
     """
     T = q.shape[0]
     device = q.device
     dtype = q.dtype
 
-    # Build block-diagonal causal mask: (T, T)
-    # Each sequence attends only to itself, causally
+    # Build block-diagonal mask: (T, T)
+    # Each sequence attends only to itself
     mask = torch.full((T, T), float("-inf"), dtype=dtype, device=device)
     for i in range(cu_seqlens.shape[0] - 1):
         s = int(cu_seqlens[i])
         e = int(cu_seqlens[i + 1])
         seq_len = e - s
-        # Causal within this sequence block
-        causal_block = torch.triu(
-            torch.full((seq_len, seq_len), float("-inf"), dtype=dtype, device=device),
-            diagonal=1,
-        )
-        mask[s:e, s:e] = causal_block
+        if causal:
+            # Causal within this sequence block
+            causal_block = torch.triu(
+                torch.full((seq_len, seq_len), float("-inf"), dtype=dtype, device=device),
+                diagonal=1,
+            )
+            mask[s:e, s:e] = causal_block
+        else:
+            # Full bidirectional attention within block
+            mask[s:e, s:e] = 0.0
 
     attn_mask = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, T, T)
 
