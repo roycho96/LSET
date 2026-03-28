@@ -7,8 +7,29 @@ import torch
 from .bi_encoder import BiEncoderTask
 from .gather import gather_with_grad
 from .losses.infonce import infonce_loss
-from .losses.contrastive import contrastive_loss
+from .losses.fused_contrastive import fused_contrastive_loss
 from .losses.matryoshka import matryoshka_loss
+
+
+def _plan_chunks_token_budget(seq_lengths, budget):
+    """Greedy: accumulate sequences until token count exceeds budget.
+
+    Returns list of (begin, end) tuples — sequence index half-open intervals.
+    """
+    N = len(seq_lengths)
+    chunks = []
+    begin = 0
+    current_tokens = 0
+    for i in range(N):
+        L = int(seq_lengths[i])
+        if current_tokens + L > budget and current_tokens > 0:
+            chunks.append((begin, i))
+            begin = i
+            current_tokens = 0
+        current_tokens += L
+    if begin < N:
+        chunks.append((begin, N))
+    return chunks
 
 
 class GradCacheWrapper:
@@ -20,11 +41,14 @@ class GradCacheWrapper:
     3. Replay: Re-encode in chunks → surrogate backward with cached grads
     """
 
-    def __init__(self, task: BiEncoderTask, chunk_size: int = 16):
+    def __init__(self, task: BiEncoderTask, chunk_size: int = 16,
+                 token_budget: int | None = None):
         self.task = task
         self.chunk_size = chunk_size
+        self.token_budget = token_budget
 
-    def __call__(self, model, query_batch, doc_batch, labels=None, scores=None):
+    def __call__(self, model, query_batch, doc_batch, labels=None, scores=None,
+                 pos_qi=None, pos_di=None, pos_counts=None):
         # Step 1: no_grad encode
         with torch.no_grad():
             q_emb = self.task.encode(model, query_batch)
@@ -47,11 +71,17 @@ class GradCacheWrapper:
                 s = scores.to(q_emb.device)
                 s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
                                                fill=float("-inf"))
+            pqi = pos_qi.to(q_emb.device) if pos_qi is not None else None
+            pdi = pos_di.to(q_emb.device) if pos_di is not None else None
+            pco = pos_counts.to(q_emb.device) if pos_counts is not None else None
             if self.task.matryoshka_dims:
                 loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
                                        self.task.temperature, labels)
             else:
-                loss = contrastive_loss(q_emb, d_emb, labels, self.task.temperature, s)
+                loss = fused_contrastive_loss(
+                    q_emb, d_emb, labels, self.task.temperature, s,
+                    pos_qi=pqi, pos_di=pdi, pos_counts=pco,
+                )
         else:
             if self.task.matryoshka_dims:
                 loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
@@ -75,20 +105,40 @@ class GradCacheWrapper:
         else:
             self._backward_padded_chunks(model, batch, emb_grads)
 
+    @staticmethod
+    def _trim_chunk(chunk):
+        """Trim padded chunk to actual max length — saves compute on short chunks."""
+        if "attention_mask" not in chunk:
+            return chunk
+        max_len = int(chunk["attention_mask"].sum(dim=1).max().item())
+        if max_len < chunk["input_ids"].shape[1]:
+            for key in ("input_ids", "attention_mask"):
+                if key in chunk:
+                    chunk[key] = chunk[key][:, :max_len]
+        return chunk
+
     def _backward_padded_chunks(self, model, batch, grads):
         B = batch["input_ids"].shape[0]
         for s in range(0, B, self.chunk_size):
             e = min(s + self.chunk_size, B)
             chunk = {k: v[s:e] for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            chunk = self._trim_chunk(chunk)
             emb = self.task.encode(model, chunk)
             (emb * grads[s:e]).sum().backward()
 
     def _backward_packed_chunks(self, model, batch, grads):
-        """Chunk by sequence count using cu_seqlens."""
+        """Chunk by sequence count or token budget using cu_seqlens."""
         cu = batch["cu_seqlens"]
         num_seqs = cu.shape[0] - 1
-        for seq_s in range(0, num_seqs, self.chunk_size):
-            seq_e = min(seq_s + self.chunk_size, num_seqs)
+
+        if self.token_budget is not None:
+            seq_lengths = (cu[1:] - cu[:-1]).tolist()
+            chunk_ranges = _plan_chunks_token_budget(seq_lengths, self.token_budget)
+        else:
+            chunk_ranges = [(s, min(s + self.chunk_size, num_seqs))
+                            for s in range(0, num_seqs, self.chunk_size)]
+
+        for seq_s, seq_e in chunk_ranges:
             tok_s = int(cu[seq_s])
             tok_e = int(cu[seq_e])
             chunk_cu = cu[seq_s:seq_e + 1] - cu[seq_s]

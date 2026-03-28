@@ -8,6 +8,7 @@ from .packed_pooling import packed_pool
 from .gather import gather_with_grad
 from .losses.infonce import infonce_loss
 from .losses.contrastive import contrastive_loss
+from .losses.fused_contrastive import fused_contrastive_loss
 from .losses.matryoshka import matryoshka_loss
 
 
@@ -64,7 +65,10 @@ class BiEncoderTask(nn.Module):
 
     def forward(self, model: nn.Module, query_batch: dict, doc_batch: dict,
                 neg_batch: dict | None = None, labels: torch.Tensor | None = None,
-                scores: torch.Tensor | None = None) -> dict:
+                scores: torch.Tensor | None = None,
+                pos_qi: torch.Tensor | None = None,
+                pos_di: torch.Tensor | None = None,
+                pos_counts: torch.Tensor | None = None) -> dict:
         q_emb = self.encode(model, query_batch)
         d_emb = self.encode(model, doc_batch)
 
@@ -86,11 +90,19 @@ class BiEncoderTask(nn.Module):
                 s = scores.to(q_emb.device)
                 s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
                                                fill=float("-inf"))
+            # Move pos_qi/pos_di/pos_counts to device
+            pqi = pos_qi.to(q_emb.device) if pos_qi is not None else None
+            pdi = pos_di.to(q_emb.device) if pos_di is not None else None
+            pco = pos_counts.to(q_emb.device) if pos_counts is not None else None
+
             if self.matryoshka_dims:
                 loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims,
                                        self.temperature, labels)
             else:
-                loss = contrastive_loss(q_emb, d_emb, labels, self.temperature, s)
+                loss = fused_contrastive_loss(
+                    q_emb, d_emb, labels, self.temperature, s,
+                    pos_qi=pqi, pos_di=pdi, pos_counts=pco,
+                )
         else:
             # Legacy: diagonal positive (backward compatible)
             if self.matryoshka_dims is not None:

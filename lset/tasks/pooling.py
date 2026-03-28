@@ -3,6 +3,8 @@
 import torch
 import torch.nn.functional as F
 
+from ..kernels.fused_normalize import normalize as _normalize
+
 
 def pool(hidden_states: torch.Tensor, attention_mask: torch.Tensor,
          strategy: str, normalize: bool = True) -> torch.Tensor:
@@ -33,6 +35,6 @@ def pool(hidden_states: torch.Tensor, attention_mask: torch.Tensor,
         raise ValueError(f"Unknown pooling strategy: {strategy}")
 
     if normalize:
-        emb = F.normalize(emb, p=2, dim=-1)
+        emb = _normalize(emb)
 
     return emb

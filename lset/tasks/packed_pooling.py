@@ -3,6 +3,8 @@
 import torch
 import torch.nn.functional as F
 
+from ..kernels.fused_normalize import normalize as _normalize
+
 
 def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
                 strategy: str, normalize: bool = True) -> torch.Tensor:
@@ -27,16 +29,19 @@ def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
         emb = hidden_states[indices]
     elif strategy == "mean":
         H = hidden_states.shape[-1]
+        lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).long()
+        seq_ids = torch.repeat_interleave(
+            torch.arange(num_seqs, device=hidden_states.device), lengths,
+        )
         emb = torch.zeros(num_seqs, H, dtype=hidden_states.dtype,
                           device=hidden_states.device)
-        for i in range(num_seqs):
-            s = int(cu_seqlens[i])
-            e = int(cu_seqlens[i + 1])
-            emb[i] = hidden_states[s:e].mean(0)
+        emb.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden_states),
+                         hidden_states)
+        emb = emb / lengths.unsqueeze(-1).to(emb.dtype).clamp(min=1e-9)
     else:
         raise ValueError(f"Unknown packed pooling strategy: {strategy}")
 
     if normalize:
-        emb = F.normalize(emb, p=2, dim=-1)
+        emb = _normalize(emb)
 
     return emb

@@ -62,8 +62,38 @@ def test_cls_packed_matches_padded():
     assert torch.allclose(packed_emb[1], h2[0], atol=1e-6)
 
 
+def test_mean_packed_single_sequence():
+    """Edge case: single sequence."""
+    h = torch.randn(5, 8)
+    cu_seqlens = torch.tensor([0, 5], dtype=torch.int32)
+    emb = packed_pool(h, cu_seqlens, "mean", normalize=False)
+    expected = h.mean(0, keepdim=True)
+    assert torch.allclose(emb, expected, atol=1e-6)
+
+
+def test_mean_packed_length_one():
+    """Edge case: sequences of length 1."""
+    h = torch.randn(3, 8)
+    cu_seqlens = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
+    emb = packed_pool(h, cu_seqlens, "mean", normalize=False)
+    assert torch.allclose(emb, h, atol=1e-6)
+
+
+def test_mean_packed_gradient_flows():
+    """Gradient flows through scatter_add_ mean pooling."""
+    h = torch.randn(5, 8, requires_grad=True)
+    cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
+    emb = packed_pool(h, cu_seqlens, "mean", normalize=False)
+    emb.sum().backward()
+    assert h.grad is not None
+    assert h.grad.shape == h.shape
+
+
 if __name__ == "__main__":
     test_last_token_packed_matches_padded()
     test_mean_packed_matches_padded()
     test_cls_packed_matches_padded()
+    test_mean_packed_single_sequence()
+    test_mean_packed_length_one()
+    test_mean_packed_gradient_flows()
     print("All packed pooling tests passed!")

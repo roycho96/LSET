@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import Qwen3Config
+from lset.kernels import rms_norm as _fused_rms_norm
+from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 
 
 class Qwen3RotaryEmbedding(nn.Module):
@@ -32,9 +34,7 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 def apply_rotary_pos_emb(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    q_embed = (q * cos) + (_rotate_half(q) * sin)
-    k_embed = (k * cos) + (_rotate_half(k) * sin)
-    return q_embed, k_embed
+    return _fused_apply_rotary_pos_emb(q, k, cos, sin)
 
 
 class Qwen3Attention(nn.Module):
@@ -119,8 +119,7 @@ class Qwen3Attention(nn.Module):
         # Position-indexed RoPE
         cos_pos = cos[position_ids].unsqueeze(1)  # (T, 1, D)
         sin_pos = sin[position_ids].unsqueeze(1)
-        q = (q * cos_pos) + (_rotate_half(q) * sin_pos)
-        k = (k * cos_pos) + (_rotate_half(k) * sin_pos)
+        q, k = _fused_apply_rotary_pos_emb(q, k, cos_pos, sin_pos)
 
         local_q_heads = q.shape[1]
         local_kv_heads = k.shape[1]
@@ -214,8 +213,4 @@ class Qwen3RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_dtype = x.dtype
-        x = x.float()
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.eps)
-        return self.weight * x.to(input_dtype)
+        return _fused_rms_norm(x, self.weight, self.eps)

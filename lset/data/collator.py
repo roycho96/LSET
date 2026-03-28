@@ -100,10 +100,12 @@ class EmbeddingCollator:
     }
     """
 
-    def __init__(self, tokenizer, max_length: int = 512, packed: bool = False):
+    def __init__(self, tokenizer, max_length: int = 512, packed: bool = False,
+                 length_sorted: bool = False):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.packed = packed
+        self.length_sorted = length_sorted
 
     def _tokenize(self, text: str) -> dict:
         encoding = self.tokenizer.encode(text)
@@ -135,6 +137,10 @@ class EmbeddingCollator:
         return self._pad_batch_left(sequences)
 
     def __call__(self, batch: list[dict]) -> dict:
+        # Sort by query length (longest first) to minimize padding waste
+        if self.length_sorted:
+            batch = sorted(batch, key=lambda s: len(s["query"]), reverse=True)
+
         num_queries = len(batch)
 
         # Tokenize queries
@@ -163,29 +169,45 @@ class EmbeddingCollator:
 
         num_docs = len(all_doc_tokens)
 
-        # Build label matrix
+        # Build label matrix + positive pair indices for fused kernel
         label_matrix = torch.zeros(num_queries, num_docs)
+        pos_qi_list = []
+        pos_di_list = []
+        pos_counts_list = []
         doc_offset = 0
         for i, sample in enumerate(batch):
+            count = 0
             if has_scores:
                 num_d = len(sample.get("all_documents",
                             sample["positives"] + sample.get("negatives", [])))
-                # For scored format: labels based on score > 0
                 scores = sample["scores"]
                 for j, score in enumerate(scores):
-                    label_matrix[i, doc_offset + j] = 1.0 if score > 0 else 0.0
+                    if score > 0:
+                        label_matrix[i, doc_offset + j] = 1.0
+                        pos_qi_list.append(i)
+                        pos_di_list.append(doc_offset + j)
+                        count += 1
+                    else:
+                        label_matrix[i, doc_offset + j] = 0.0
                 doc_offset += num_d
             else:
                 num_pos = len(sample["positives"])
                 num_neg = len(sample.get("negatives", []))
                 for j in range(num_pos):
                     label_matrix[i, doc_offset + j] = 1.0
+                    pos_qi_list.append(i)
+                    pos_di_list.append(doc_offset + j)
+                    count += 1
                 doc_offset += num_pos + num_neg
+            pos_counts_list.append(count)
 
         result = {
             "query": self._collate_sequences(query_tokens),
             "doc": self._collate_sequences(all_doc_tokens),
             "labels": label_matrix,
+            "pos_qi": torch.tensor(pos_qi_list, dtype=torch.long),
+            "pos_di": torch.tensor(pos_di_list, dtype=torch.long),
+            "pos_counts": torch.tensor(pos_counts_list, dtype=torch.long),
         }
 
         # Build score matrix if scored
