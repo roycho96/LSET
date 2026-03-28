@@ -97,7 +97,7 @@ class LlamaAttention(nn.Module):
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # GQA expand
+        # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
         local_q_heads = q.shape[1]
         local_kv_heads = k.shape[1]
         local_kv_groups = local_q_heads // local_kv_heads

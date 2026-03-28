@@ -9,6 +9,7 @@ from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
 from .attention import LlamaAttention
 from .config import LlamaConfig
 from .mlp import LlamaMLP
+from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 
 class LlamaBlock(nn.Module):
@@ -40,10 +41,14 @@ class LlamaBlock(nn.Module):
             )
         else:
             hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
-        hidden_states = residual + hidden_states
 
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        # Fused residual add + post-attention RMSNorm (pre-MLP norm)
+        hidden_states, residual = _residual_rms_norm(
+            residual, hidden_states,
+            self.post_attention_layernorm.weight,
+            self.post_attention_layernorm.eps,
+        )
+
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 

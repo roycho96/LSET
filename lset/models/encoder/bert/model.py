@@ -167,7 +167,11 @@ class BertEncoder(nn.Module):
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
     ) -> dict[str, torch.Tensor]:
-        """Packed forward for BERT encoder using flash_attn with causal=False."""
+        """Packed forward for BERT encoder.
+
+        Uses varlen_attn or flash_attn with causal=False when available,
+        falling back to O(T^2) SDPA block-diagonal mask.
+        """
         T = input_ids.shape[0]
 
         # Compute embeddings per-token (no batch dimension)
@@ -178,17 +182,90 @@ class BertEncoder(nn.Module):
         )
         hidden_states = self.embeddings.LayerNorm(word_emb + pos_emb + type_emb)
 
-        # Build block-diagonal mask for SDPA (bidirectional)
-        mask = torch.full((T, T), float("-inf"), dtype=hidden_states.dtype, device=hidden_states.device)
-        for i in range(cu_seqlens.shape[0] - 1):
-            s = int(cu_seqlens[i])
-            e = int(cu_seqlens[i + 1])
-            mask[s:e, s:e] = 0.0
-        attn_mask = mask.unsqueeze(0).unsqueeze(0)
+        # Try to use efficient varlen backend for packed bidirectional attention
+        use_varlen = self._can_use_varlen(hidden_states)
 
-        for layer in self.layers:
-            hidden_states = hidden_states.unsqueeze(0)  # (1, T, H)
-            hidden_states = layer(hidden_states, attn_mask)
-            hidden_states = hidden_states.squeeze(0)  # (T, H)
+        if use_varlen:
+            for layer in self.layers:
+                hidden_states = self._forward_packed_layer_varlen(
+                    layer, hidden_states, cu_seqlens, max_seqlen,
+                )
+        else:
+            # Fallback: O(T^2) block-diagonal mask
+            mask = torch.full((T, T), float("-inf"), dtype=hidden_states.dtype,
+                              device=hidden_states.device)
+            for i in range(cu_seqlens.shape[0] - 1):
+                s = int(cu_seqlens[i])
+                e = int(cu_seqlens[i + 1])
+                mask[s:e, s:e] = 0.0
+            attn_mask = mask.unsqueeze(0).unsqueeze(0)
+
+            for layer in self.layers:
+                hidden_states = hidden_states.unsqueeze(0)  # (1, T, H)
+                hidden_states = layer(hidden_states, attn_mask)
+                hidden_states = hidden_states.squeeze(0)  # (T, H)
 
         return {"hidden_states": hidden_states}
+
+    @staticmethod
+    def _can_use_varlen(hidden_states: torch.Tensor) -> bool:
+        """Check if efficient varlen backends are available."""
+        if not hidden_states.is_cuda:
+            return False
+        if hidden_states.dtype not in (torch.float16, torch.bfloat16):
+            return False
+        try:
+            from flash_attn import flash_attn_varlen_func  # noqa: F401
+            return True
+        except ImportError:
+            pass
+        try:
+            from torch.nn.attention.varlen import varlen_attn  # noqa: F401
+            return True
+        except ImportError:
+            pass
+        return False
+
+    def _forward_packed_layer_varlen(
+        self,
+        layer,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+    ) -> torch.Tensor:
+        """Forward a single BERT layer using varlen attention (bidirectional)."""
+        attn = layer.attention
+        T = hidden_states.shape[0]
+        num_heads = attn.num_heads
+        head_dim = attn.head_dim
+
+        q = attn.query(hidden_states).view(T, num_heads, head_dim)
+        k = attn.key(hidden_states).view(T, num_heads, head_dim)
+        v = attn.value(hidden_states).view(T, num_heads, head_dim)
+
+        # Use flash_attn or varlen_attn with causal=False
+        attn_out = None
+        try:
+            from flash_attn import flash_attn_varlen_func
+            attn_out = flash_attn_varlen_func(
+                q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
+                causal=False,
+            )
+        except ImportError:
+            pass
+
+        if attn_out is None:
+            from torch.nn.attention.varlen import varlen_attn
+            attn_out = varlen_attn(
+                q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
+                window_size=(-1, -1),  # bidirectional
+            )
+
+        attn_out = attn_out.reshape(T, -1)
+        # Post-norm: LayerNorm(residual + dense(attn_out))
+        hidden_states = attn.LayerNorm(hidden_states + attn.dense(attn_out))
+
+        # MLP with post-norm
+        hidden_states = layer.mlp(hidden_states.unsqueeze(0)).squeeze(0)
+
+        return hidden_states

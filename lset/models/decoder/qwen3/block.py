@@ -6,6 +6,7 @@ import torch.nn as nn
 from .attention import Qwen3Attention, Qwen3RMSNorm
 from .config import Qwen3Config
 from .mlp import Qwen3MLP
+from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 
 class Qwen3Block(nn.Module):
@@ -39,11 +40,15 @@ class Qwen3Block(nn.Module):
             )
         else:
             hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
-        hidden_states = residual + hidden_states
 
-        # Pre-norm MLP
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        # Fused residual add + post-attention RMSNorm (pre-MLP norm)
+        hidden_states, residual = _residual_rms_norm(
+            residual, hidden_states,
+            self.post_attention_layernorm.weight,
+            self.post_attention_layernorm.eps,
+        )
+
+        # MLP
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 

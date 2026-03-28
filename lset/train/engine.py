@@ -74,7 +74,16 @@ class TrainingEngine:
         # FP8 training
         fp8: bool = False,
         fp8_recipe: str = "rowwise",
+        # Attention backend
+        attn_backend: str = "auto",
+        # CUDA graph (padded mode only)
+        cuda_graph: bool = False,
     ):
+        # Validate CUDA graph compatibility
+        if cuda_graph:
+            from lset.train.cuda_graph import validate_cuda_graph_config
+            validate_cuda_graph_config(packed, use_grad_cache, compile_model=False)
+
         # Validate incompatible options
         if fp8 and (lora or qlora):
             raise ValueError(
@@ -86,6 +95,10 @@ class TrainingEngine:
                 "QLoRA + Tensor Parallelism is not supported (NF4 + TP not "
                 "implemented in torchao). Use LoRA + TP or QLoRA without TP."
             )
+
+        # Set attention backend before model construction
+        from lset.models.decoder.qwen3.attention import set_attn_backend
+        set_attn_backend(attn_backend)
 
         self.dp_size = dp_size
         self.tp_size = tp_size
@@ -102,6 +115,7 @@ class TrainingEngine:
         self.needs_dist_cleanup = False
         self.use_lora = lora or qlora
         self.use_fp8 = fp8
+        self.use_cuda_graph = cuda_graph
 
         self.rank = int(os.environ.get("RANK", 0))
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -246,6 +260,11 @@ class TrainingEngine:
             generator=generator,
         )
         self.device = device
+
+        # CUDA graph wrapper (set up lazily on first batch to know seq_length)
+        self.cuda_graph_wrapper = None
+        if self.use_cuda_graph:
+            self._cuda_graph_seq_length = None  # set from first batch
 
     def _to_device(self, d: dict) -> dict:
         return {k: (v.to(self.device) if isinstance(v, torch.Tensor) else v)

@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from ..kernels.fused_normalize import normalize as _normalize
+from ..kernels.fused_pool_normalize import fused_pool_normalize as _fused_pool_normalize
 
 
 def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
@@ -19,6 +20,13 @@ def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
     Returns:
         (num_seqs, H) embeddings
     """
+    # Fused path: pool + normalize in one shot when on CUDA
+    import os
+    if (os.environ.get("LSET_DISABLE_FUSED_POOL_NORMALIZE") != "1"
+            and normalize and hidden_states.is_cuda
+            and strategy in ("last_token", "cls", "mean")):
+        return _fused_pool_normalize(hidden_states, cu_seqlens, strategy)
+
     num_seqs = cu_seqlens.shape[0] - 1
 
     if strategy == "last_token":

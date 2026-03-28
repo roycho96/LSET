@@ -116,8 +116,9 @@ def _apply_ac(model: nn.Module, ratio: float):
         layers[i].forward = make_wrapper(orig_forward)
 
 
-def _apply_fsdp2(model: nn.Module, dp_mesh: DeviceMesh, mp_dtype: torch.dtype):
-    """Bottom-up FSDP2 sharding."""
+def _apply_fsdp2(model: nn.Module, dp_mesh: DeviceMesh, mp_dtype: torch.dtype,
+                  enable_prefetch: bool = True):
+    """Bottom-up FSDP2 sharding with optional communication prefetch."""
     mp_policy = MixedPrecisionPolicy(
         param_dtype=mp_dtype,
         reduce_dtype=torch.float32,
@@ -127,3 +128,10 @@ def _apply_fsdp2(model: nn.Module, dp_mesh: DeviceMesh, mp_dtype: torch.dtype):
         for layer in model.layers:
             fully_shard(layer, mesh=dp_mesh, mp_policy=mp_policy)
     fully_shard(model, mesh=dp_mesh, mp_policy=mp_policy)
+
+    # Set up forward prefetch: overlap next layer's all-gather with current
+    # layer's compute. Backward prefetch is implicit in FSDP2 by default.
+    if enable_prefetch and hasattr(model, "layers") and len(model.layers) > 1:
+        layers = list(model.layers)
+        for i in range(len(layers) - 1):
+            layers[i].set_modules_to_forward_prefetch([layers[i + 1]])

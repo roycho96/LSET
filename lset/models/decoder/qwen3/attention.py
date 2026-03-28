@@ -9,6 +9,22 @@ from lset.kernels import rms_norm as _fused_rms_norm
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 
 
+# Global attention backend setting: "auto" | "flash_attn" | "varlen_attn" | "sdpa"
+_ATTN_BACKEND = "auto"
+
+
+def set_attn_backend(backend: str):
+    """Set the global attention backend for packed mode."""
+    global _ATTN_BACKEND
+    assert backend in ("auto", "flash_attn", "varlen_attn", "sdpa"), \
+        f"Invalid backend: {backend}"
+    _ATTN_BACKEND = backend
+
+
+def get_attn_backend() -> str:
+    return _ATTN_BACKEND
+
+
 class Qwen3RotaryEmbedding(nn.Module):
     def __init__(self, head_dim: int, max_seq_len: int, theta: float):
         super().__init__()
@@ -72,7 +88,7 @@ class Qwen3Attention(nn.Module):
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # GQA: expand kv heads (use actual local head counts)
+        # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
         local_q_heads = q.shape[1]
         local_kv_heads = k.shape[1]
         local_kv_groups = local_q_heads // local_kv_heads
@@ -133,23 +149,68 @@ class Qwen3Attention(nn.Module):
         return self.o_proj(attn_out)
 
 
+def _try_varlen_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
+    """Try PyTorch native varlen_attn. Requires CUDA + fp16/bf16."""
+    if not q.is_cuda or q.dtype not in (torch.float16, torch.bfloat16):
+        return None
+    try:
+        from torch.nn.attention.varlen import varlen_attn
+        window = (-1, 0) if causal else (-1, -1)
+        return varlen_attn(q, k, v, cu_seqlens, cu_seqlens,
+                          max_seqlen, max_seqlen, window_size=window)
+    except ImportError:
+        return None
+
+
+def _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
+    """Try flash_attn_varlen_func. Requires CUDA + fp16/bf16."""
+    if not q.is_cuda or q.dtype not in (torch.float16, torch.bfloat16):
+        return None
+    try:
+        from flash_attn import flash_attn_varlen_func
+        return flash_attn_varlen_func(
+            q, k, v,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            causal=causal,
+        )
+    except ImportError:
+        return None
+
+
 def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
                           num_heads, num_kv_heads, num_kv_groups,
                           causal=True):
-    """Try flash_attn_varlen_func, fall back to SDPA if unavailable or unsupported dtype."""
-    if q.dtype in (torch.float16, torch.bfloat16):
-        try:
-            from flash_attn import flash_attn_varlen_func
-            return flash_attn_varlen_func(
-                q, k, v,
-                cu_seqlens_q=cu_seqlens,
-                cu_seqlens_k=cu_seqlens,
-                max_seqlen_q=max_seqlen,
-                max_seqlen_k=max_seqlen,
-                causal=causal,
-            )
-        except ImportError:
-            pass
+    """Configurable attention backend for packed sequences.
+
+    Backend selection ("auto" strategy):
+      flash_attn (v2.8.3+) compiles without graph breaks, so it's preferred.
+      varlen_attn is PyTorch-native and also compile-friendly.
+      SDPA fallback builds O(T^2) block-diagonal mask.
+
+    Priority: flash_attn > varlen_attn > SDPA (when auto).
+    """
+    backend = _ATTN_BACKEND
+
+    if backend == "auto":
+        # flash_attn is fastest and compiles cleanly (FA 2.8.3+)
+        result = _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal)
+        if result is not None:
+            return result
+        result = _try_varlen_attn(q, k, v, cu_seqlens, max_seqlen, causal)
+        if result is not None:
+            return result
+    elif backend == "flash_attn":
+        result = _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal)
+        if result is not None:
+            return result
+    elif backend == "varlen_attn":
+        result = _try_varlen_attn(q, k, v, cu_seqlens, max_seqlen, causal)
+        if result is not None:
+            return result
+
     return _sdpa_packed_fallback(
         q, k, v, cu_seqlens, max_seqlen,
         num_heads, num_kv_heads, num_kv_groups,
@@ -195,7 +256,7 @@ def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen,
     k = k.unsqueeze(0).transpose(1, 2)  # (1, num_kv_heads, T, D)
     v = v.unsqueeze(0).transpose(1, 2)
 
-    # GQA expand
+    # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
     if num_kv_groups > 1:
         k = k.repeat_interleave(num_kv_groups, dim=1)
         v = v.repeat_interleave(num_kv_groups, dim=1)
