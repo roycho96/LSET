@@ -1,0 +1,17 @@
+model:
+  path: ~/models/bert-base-uncased
+
+data:
+  train_path: data/train.jsonl
+  max_seq_length: 128
+
+training:
+  batch_size: 32
+  lr: 2e-5
+  epochs: 3
+
+packing:
+  enabled: true
+
+attention:
+  backend: auto

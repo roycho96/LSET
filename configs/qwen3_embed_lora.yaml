@@ -1,0 +1,25 @@
+model:
+  path: ~/models/Qwen3-Embedding-0.6B
+
+data:
+  train_path: data/train.jsonl
+  max_seq_length: 128
+
+training:
+  batch_size: 16
+  lr: 1e-4
+  epochs: 5
+  scheduler: cosine
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  targets:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
+packing:
+  enabled: true

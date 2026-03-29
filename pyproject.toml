@@ -23,6 +23,19 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+dependencies = [
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+eval = ["mteb>=2.0.0"]
+
+[project.scripts]
+lset = "lset.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/roycho96/LSET"
 Issues = "https://github.com/roycho96/LSET/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
