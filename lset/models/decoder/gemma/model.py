@@ -22,6 +22,7 @@ from lset.models.decoder.qwen3.attention import (
     _rotate_half,
     apply_rotary_pos_emb,
 )
+from lset.kernels import residual_rms_norm as _residual_rms_norm
 from .config import GemmaConfig
 
 
@@ -162,11 +163,16 @@ class GemmaBlock(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
 
-        # Pre-norm MLP with extra norms
-        residual = hidden_states
-        hidden_states = self.pre_feedforward_layernorm(hidden_states)
+        # Fused: (residual + hidden_states) then pre_feedforward_layernorm
+        # Gemma norms use (1 + weight) instead of weight
+        hidden_states, residual = _residual_rms_norm(
+            residual, hidden_states,
+            1.0 + self.pre_feedforward_layernorm.weight,
+            self.pre_feedforward_layernorm.eps,
+        )
+
+        # MLP with post-feedforward norm
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
