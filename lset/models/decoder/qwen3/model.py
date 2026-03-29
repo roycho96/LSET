@@ -10,11 +10,15 @@ from .config import Qwen3Config
 
 
 class Qwen3Decoder(nn.Module):
-    def __init__(self, config: Qwen3Config):
+    def __init__(self, config: Qwen3Config, fused_projections: bool = False):
         super().__init__()
         self.config = config
+        self.fused_projections = fused_projections
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([Qwen3Block(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            Qwen3Block(config, fused_projections=fused_projections)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3RotaryEmbedding(
             config.head_dim, config.max_position_embeddings, config.rope_theta

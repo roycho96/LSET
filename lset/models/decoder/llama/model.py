@@ -17,11 +17,15 @@ from .config import LlamaConfig
 
 
 class LlamaDecoder(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, fused_projections: bool = False):
         super().__init__()
         self.config = config
+        self.fused_projections = fused_projections
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([LlamaBlock(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            LlamaBlock(config, fused_projections=fused_projections)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(
             config.head_dim, config.max_position_embeddings, config.rope_theta,

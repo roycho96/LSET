@@ -10,12 +10,12 @@ from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 
 class Qwen3Block(nn.Module):
-    def __init__(self, config: Qwen3Config):
+    def __init__(self, config: Qwen3Config, fused_projections: bool = False):
         super().__init__()
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = Qwen3Attention(config)
+        self.self_attn = Qwen3Attention(config, fused_qkv=fused_projections)
         self.post_attention_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = Qwen3MLP(config)
+        self.mlp = Qwen3MLP(config, fused_gate_up=fused_projections)
 
     def forward(
         self,

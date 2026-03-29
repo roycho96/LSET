@@ -70,16 +70,23 @@ class LlamaRotaryEmbedding(nn.Module):
 
 
 class LlamaAttention(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, fused_qkv: bool = False):
         super().__init__()
         self.num_heads = config.num_attention_heads
         self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
+        self.fused_qkv = fused_qkv
 
-        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
-        self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
+        q_dim = self.num_heads * self.head_dim
+        kv_dim = self.num_kv_heads * self.head_dim
+        bias = config.attention_bias
+        if fused_qkv:
+            self.qkv_proj = nn.Linear(config.hidden_size, q_dim + 2 * kv_dim, bias=bias)
+        else:
+            self.q_proj = nn.Linear(config.hidden_size, q_dim, bias=bias)
+            self.k_proj = nn.Linear(config.hidden_size, kv_dim, bias=bias)
+            self.v_proj = nn.Linear(config.hidden_size, kv_dim, bias=bias)
+        self.o_proj = nn.Linear(q_dim, config.hidden_size, bias=bias)
         # No QK-norm (key difference from Qwen3)
 
     def forward(
@@ -91,9 +98,20 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
 
-        q = self.q_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+        if self.fused_qkv:
+            qkv = self.qkv_proj(hidden_states)
+            total_dim = qkv.shape[-1]
+            ratio = self.num_heads + 2 * self.num_kv_heads
+            local_q_dim = total_dim * self.num_heads // ratio
+            local_kv_dim = total_dim * self.num_kv_heads // ratio
+            q, k, v = qkv.split([local_q_dim, local_kv_dim, local_kv_dim], dim=-1)
+            q = q.view(B, S, -1, self.head_dim).transpose(1, 2)
+            k = k.view(B, S, -1, self.head_dim).transpose(1, 2)
+            v = v.view(B, S, -1, self.head_dim).transpose(1, 2)
+        else:
+            q = self.q_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+            k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+            v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
@@ -124,9 +142,20 @@ class LlamaAttention(nn.Module):
         max_seqlen: int,
     ) -> torch.Tensor:
         T, _ = hidden_states.shape
-        q = self.q_proj(hidden_states).view(T, -1, self.head_dim)
-        k = self.k_proj(hidden_states).view(T, -1, self.head_dim)
-        v = self.v_proj(hidden_states).view(T, -1, self.head_dim)
+        if self.fused_qkv:
+            qkv = self.qkv_proj(hidden_states)
+            total_dim = qkv.shape[-1]
+            ratio = self.num_heads + 2 * self.num_kv_heads
+            local_q_dim = total_dim * self.num_heads // ratio
+            local_kv_dim = total_dim * self.num_kv_heads // ratio
+            q, k, v = qkv.split([local_q_dim, local_kv_dim, local_kv_dim], dim=-1)
+            q = q.view(T, -1, self.head_dim)
+            k = k.view(T, -1, self.head_dim)
+            v = v.view(T, -1, self.head_dim)
+        else:
+            q = self.q_proj(hidden_states).view(T, -1, self.head_dim)
+            k = self.k_proj(hidden_states).view(T, -1, self.head_dim)
+            v = self.v_proj(hidden_states).view(T, -1, self.head_dim)
 
         cos_pos = cos[position_ids].unsqueeze(1)
         sin_pos = sin[position_ids].unsqueeze(1)

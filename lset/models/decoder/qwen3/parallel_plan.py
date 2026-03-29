@@ -15,7 +15,8 @@ from torch.distributed.tensor.parallel import (
 from torch.distributed._tensor import Replicate, Shard
 
 
-def get_tp_plan(config, use_sequence_parallel: bool = False, use_lora: bool = False) -> dict:
+def get_tp_plan(config, use_sequence_parallel: bool = False, use_lora: bool = False,
+                fused_projections: bool = False) -> dict:
     """Get TP parallelization plan for Qwen3Decoder.
 
     Args:
@@ -27,22 +28,22 @@ def get_tp_plan(config, use_sequence_parallel: bool = False, use_lora: bool = Fa
         Dict mapping FQN patterns to ParallelStyle instances.
     """
     if use_lora:
-        # LoRA + TP always uses basic plan (no SP). SP + LoRA has complex DTensor
-        # interactions that don't compose cleanly. The basic plan works because
-        # use_local_output=True keeps everything as plain tensors.
         return _get_basic_plan(config, use_lora=True)
     if use_sequence_parallel:
-        return _get_sp_plan(config)
-    return _get_basic_plan(config)
+        return _get_sp_plan(config, fused_projections=fused_projections)
+    return _get_basic_plan(config, fused_projections=fused_projections)
 
 
-def _get_basic_plan(config, use_lora: bool = False) -> dict:
+def _get_basic_plan(config, use_lora: bool = False, fused_projections: bool = False) -> dict:
     """Basic TP plan without SequenceParallel — works with both padded and packed."""
     plan = {}
     for i in range(config.num_hidden_layers):
         p = f"layers.{i}"
-        colwise = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-                    "mlp.gate_proj", "mlp.up_proj"]
+        if fused_projections and not use_lora:
+            colwise = ["self_attn.qkv_proj", "mlp.gate_up_proj"]
+        else:
+            colwise = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                        "mlp.gate_proj", "mlp.up_proj"]
         rowwise = ["self_attn.o_proj", "mlp.down_proj"]
 
         if use_lora:
@@ -65,7 +66,7 @@ def _get_basic_plan(config, use_lora: bool = False) -> dict:
     return plan
 
 
-def _get_sp_plan(config) -> dict:
+def _get_sp_plan(config, fused_projections: bool = False) -> dict:
     """TP plan with SequenceParallel — padded mode only.
 
     Data flow per block:
@@ -111,8 +112,11 @@ def _get_sp_plan(config) -> dict:
         })
 
         # Colwise targets
-        colwise_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-                         "mlp.gate_proj", "mlp.up_proj"]
+        if fused_projections:
+            colwise_names = ["self_attn.qkv_proj", "mlp.gate_up_proj"]
+        else:
+            colwise_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                             "mlp.gate_proj", "mlp.up_proj"]
         # Rowwise targets (with SP output)
         rowwise_sp = {"self_attn.o_proj": Shard(1), "mlp.down_proj": Shard(1)}
 

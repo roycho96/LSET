@@ -60,20 +60,25 @@ class GemmaRotaryEmbedding(nn.Module):
 
 
 class GemmaAttention(nn.Module):
-    def __init__(self, config: GemmaConfig, is_sliding: bool):
+    def __init__(self, config: GemmaConfig, is_sliding: bool, fused_qkv: bool = False):
         super().__init__()
         self.num_heads = config.num_attention_heads
         self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
         self.is_sliding = is_sliding
         self.sliding_window = config.sliding_window
-        # Gemma3 uses query_pre_attn_scalar for attention scaling
+        self.fused_qkv = fused_qkv
         self.attn_scale = 1.0 / math.sqrt(config.query_pre_attn_scalar)
 
-        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=False)
+        q_dim = self.num_heads * self.head_dim
+        kv_dim = self.num_kv_heads * self.head_dim
+        if fused_qkv:
+            self.qkv_proj = nn.Linear(config.hidden_size, q_dim + 2 * kv_dim, bias=False)
+        else:
+            self.q_proj = nn.Linear(config.hidden_size, q_dim, bias=False)
+            self.k_proj = nn.Linear(config.hidden_size, kv_dim, bias=False)
+            self.v_proj = nn.Linear(config.hidden_size, kv_dim, bias=False)
+        self.o_proj = nn.Linear(q_dim, config.hidden_size, bias=False)
 
         self.q_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
@@ -87,9 +92,20 @@ class GemmaAttention(nn.Module):
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
 
-        q = self.q_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+        if self.fused_qkv:
+            qkv = self.qkv_proj(hidden_states)
+            total_dim = qkv.shape[-1]
+            ratio = self.num_heads + 2 * self.num_kv_heads
+            local_q_dim = total_dim * self.num_heads // ratio
+            local_kv_dim = total_dim * self.num_kv_heads // ratio
+            q, k, v = qkv.split([local_q_dim, local_kv_dim, local_kv_dim], dim=-1)
+            q = q.view(B, S, -1, self.head_dim).transpose(1, 2)
+            k = k.view(B, S, -1, self.head_dim).transpose(1, 2)
+            v = v.view(B, S, -1, self.head_dim).transpose(1, 2)
+        else:
+            q = self.q_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+            k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
+            v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
@@ -129,26 +145,34 @@ class GemmaAttention(nn.Module):
 class GemmaMLP(nn.Module):
     """Gated MLP with GELU-tanh activation (not SiLU)."""
 
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config: GemmaConfig, fused_gate_up: bool = False):
         super().__init__()
-        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.fused_gate_up = fused_gate_up
+        if fused_gate_up:
+            self.gate_up_proj = nn.Linear(config.hidden_size, 2 * config.intermediate_size, bias=False)
+        else:
+            self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+            self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.fused_gate_up:
+            gate_up = self.gate_up_proj(x)
+            gate, up = gate_up.chunk(2, dim=-1)
+            return self.down_proj(F.gelu(gate, approximate="tanh") * up)
         return self.down_proj(F.gelu(self.gate_proj(x), approximate="tanh") * self.up_proj(x))
 
 
 class GemmaBlock(nn.Module):
     """Gemma3 block with 4 layer norms (pre-attn, post-attn, pre-ff, post-ff)."""
 
-    def __init__(self, config: GemmaConfig, is_sliding: bool):
+    def __init__(self, config: GemmaConfig, is_sliding: bool, fused_projections: bool = False):
         super().__init__()
         self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = GemmaAttention(config, is_sliding=is_sliding)
+        self.self_attn = GemmaAttention(config, is_sliding=is_sliding, fused_qkv=fused_projections)
         self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.pre_feedforward_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = GemmaMLP(config)
+        self.mlp = GemmaMLP(config, fused_gate_up=fused_projections)
         self.post_feedforward_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
@@ -181,15 +205,16 @@ class GemmaBlock(nn.Module):
 
 
 class GemmaEmbeddingModel(nn.Module):
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config: GemmaConfig, fused_projections: bool = False):
         super().__init__()
         self.config = config
+        self.fused_projections = fused_projections
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
 
-        # Build layers with correct sliding/full attention pattern
         layer_types = config.layer_types or ["sliding_attention"] * config.num_hidden_layers
         self.layers = nn.ModuleList([
-            GemmaBlock(config, is_sliding=(lt == "sliding_attention"))
+            GemmaBlock(config, is_sliding=(lt == "sliding_attention"),
+                       fused_projections=fused_projections)
             for lt in layer_types
         ])
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)

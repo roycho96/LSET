@@ -13,12 +13,12 @@ from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 
 class LlamaBlock(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, fused_projections: bool = False):
         super().__init__()
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = LlamaAttention(config)
+        self.self_attn = LlamaAttention(config, fused_qkv=fused_projections)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = LlamaMLP(config)
+        self.mlp = LlamaMLP(config, fused_gate_up=fused_projections)
 
     def forward(
         self,
