@@ -18,6 +18,9 @@ class TestConfigLoad:
         assert cfg.packing.enabled is False
         assert cfg.kernels.fused is True
         assert cfg.distributed.dp_size == 1
+        # GradCache: token_budget is primary, chunk_size is fallback
+        assert cfg.grad_cache.token_budget == 4096
+        assert cfg.grad_cache.chunk_size is None
 
     def test_load_yaml_minimal(self, tmp_path):
         yaml_content = "model:\n  path: /tmp/model\ndata:\n  train_path: /tmp/data.jsonl\n"

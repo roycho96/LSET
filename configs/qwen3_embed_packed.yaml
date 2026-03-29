@@ -17,7 +17,7 @@ packing:
 
 grad_cache:
   enabled: true
-  chunk_size: 8
+  token_budget: 4096
 
 kernels:
   fused: true

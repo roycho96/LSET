@@ -53,6 +53,7 @@ class TrainingEngine:
         packed: bool = False,
         use_grad_cache: bool = False,
         gc_chunk_size: int = 16,
+        gc_token_budget: int | None = None,
         gradient_accumulation_steps: int = 1,
         save_steps: int = 0,
         output_dir: str = "./output",
@@ -190,7 +191,10 @@ class TrainingEngine:
         # GradCache
         self.grad_cache = None
         if use_grad_cache:
-            self.grad_cache = GradCacheWrapper(self.task, chunk_size=gc_chunk_size)
+            self.grad_cache = GradCacheWrapper(
+                self.task, chunk_size=gc_chunk_size,
+                token_budget=gc_token_budget,
+            )
 
         # Optimizer — only LoRA params when using LoRA/QLoRA
         if self.use_lora:

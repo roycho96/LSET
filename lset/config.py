@@ -61,7 +61,8 @@ class PackingConfig:
 @dataclass
 class GradCacheConfig:
     enabled: bool = False
-    chunk_size: int = 8
+    token_budget: int = 4096            # primary: max tokens per chunk
+    chunk_size: Optional[int] = None    # fallback: fixed sequence count per chunk
 
 
 @dataclass
