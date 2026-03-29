@@ -7,6 +7,7 @@ from .fused_residual_rmsnorm import residual_rms_norm, fused_residual_rms_norm
 from .fused_pool_normalize import fused_pool_normalize
 from .fused_rope import apply_rotary_pos_emb, fused_apply_rotary_pos_emb
 from .fused_swiglu import swiglu, fused_swiglu
+from .triton_segment_pool import triton_segment_mean_pool
 
 __all__ = [
     "normalize", "fused_l2_normalize",
