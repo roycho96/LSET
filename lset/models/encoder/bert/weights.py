@@ -6,6 +6,33 @@ import torch
 from safetensors.torch import load_file
 
 
+def _fuse_bert_qkv_weights(state_dict: dict) -> dict:
+    """Fuse separate Q/K/V weights+biases into qkv_proj for BERT."""
+    skip_keys = set()
+    fuse_ops = []
+
+    for key in state_dict:
+        if ".attention.query.weight" in key:
+            prefix = key.replace("query.weight", "")
+            k_key = f"{prefix}key.weight"
+            v_key = f"{prefix}value.weight"
+            if k_key in state_dict and v_key in state_dict:
+                fuse_ops.append((f"{prefix}qkv_proj.weight", [key, k_key, v_key]))
+                skip_keys.update([key, k_key, v_key])
+                # Also fuse biases
+                q_bias = key.replace(".weight", ".bias")
+                k_bias = k_key.replace(".weight", ".bias")
+                v_bias = v_key.replace(".weight", ".bias")
+                if all(b in state_dict for b in [q_bias, k_bias, v_bias]):
+                    fuse_ops.append((f"{prefix}qkv_proj.bias", [q_bias, k_bias, v_bias]))
+                    skip_keys.update([q_bias, k_bias, v_bias])
+
+    fused = {k: v for k, v in state_dict.items() if k not in skip_keys}
+    for fused_key, source_keys in fuse_ops:
+        fused[fused_key] = torch.cat([state_dict[k] for k in source_keys], dim=0)
+    return fused
+
+
 def _load_weights(model_path: Path) -> dict:
     """Load weights from safetensors or pytorch_model.bin."""
     safetensor_files = sorted(model_path.glob("*.safetensors"))
@@ -25,7 +52,7 @@ def _load_weights(model_path: Path) -> dict:
     raise FileNotFoundError(f"No model files found in {model_path}")
 
 
-def load_bert_weights(model_path: str | Path) -> dict:
+def load_bert_weights(model_path: str | Path, fused_projections: bool = False) -> dict:
     """Load BERT weights and convert keys to LSET format.
 
     BERT HF keys use 'bert.' prefix and 'gamma'/'beta' for LayerNorm.
@@ -63,10 +90,14 @@ def load_bert_weights(model_path: str | Path) -> dict:
         new_key = new_key.replace("output.LayerNorm", "mlp.LayerNorm")
 
         converted[new_key] = value
+
+    if fused_projections:
+        converted = _fuse_bert_qkv_weights(converted)
+
     return converted
 
 
-def load_xlm_roberta_weights(model_path: str | Path) -> dict:
+def load_xlm_roberta_weights(model_path: str | Path, fused_projections: bool = False) -> dict:
     """Load XLM-RoBERTa weights and convert keys to LSET format.
 
     XLM-RoBERTa uses same structure as BERT but without 'bert.' prefix,
@@ -94,4 +125,8 @@ def load_xlm_roberta_weights(model_path: str | Path) -> dict:
         new_key = new_key.replace("output.LayerNorm", "mlp.LayerNorm")
 
         converted[new_key] = value
+
+    if fused_projections:
+        converted = _fuse_bert_qkv_weights(converted)
+
     return converted

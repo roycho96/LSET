@@ -14,9 +14,9 @@ import torch.nn.functional as F
 from lset.models.decoder.qwen3.attention import (
     Qwen3RMSNorm as LlamaRMSNorm,
     apply_rotary_pos_emb,
-    _rotate_half,
     _flash_or_sdpa_packed,
 )
+from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 from .config import LlamaConfig
 
 
@@ -159,8 +159,7 @@ class LlamaAttention(nn.Module):
 
         cos_pos = cos[position_ids].unsqueeze(1)
         sin_pos = sin[position_ids].unsqueeze(1)
-        q = (q * cos_pos) + (_rotate_half(q) * sin_pos)
-        k = (k * cos_pos) + (_rotate_half(k) * sin_pos)
+        q, k = _fused_apply_rotary_pos_emb(q, k, cos_pos, sin_pos)
 
         local_q_heads = q.shape[1]
         local_kv_heads = k.shape[1]

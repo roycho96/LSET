@@ -6,6 +6,11 @@ Supports both BERT and XLM-RoBERTa architectures:
 - Post-norm LayerNorm (after residual, not before)
 - GELU MLP (fc1 → GELU → fc2, not SwiGLU)
 - Bias in all projections
+
+Fused kernel optimizations:
+- FusedLayerNorm (embedding layer norm)
+- FusedResidualLayerNorm (post-norm in attention and MLP)
+- Fused QKV projection (optional)
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import BertConfig
+from lset.kernels import layer_norm as _fused_layer_norm
+from lset.kernels import residual_layer_norm as _residual_layer_norm
 
 
 class BertEmbeddings(nn.Module):
@@ -42,18 +49,26 @@ class BertEmbeddings(nn.Module):
             + self.position_embeddings(position_ids)
             + self.token_type_embeddings(token_type_ids)
         )
-        return self.LayerNorm(embeddings)
+        return _fused_layer_norm(
+            embeddings, self.LayerNorm.weight, self.LayerNorm.bias,
+            self.LayerNorm.eps,
+        )
 
 
 class BertAttention(nn.Module):
-    def __init__(self, config: BertConfig):
+    def __init__(self, config: BertConfig, fused_qkv: bool = False):
         super().__init__()
         self.num_heads = config.num_attention_heads
         self.head_dim = config.hidden_size // config.num_attention_heads
+        self.fused_qkv = fused_qkv
+        self.layer_norm_eps = config.layer_norm_eps
 
-        self.query = nn.Linear(config.hidden_size, config.hidden_size)
-        self.key = nn.Linear(config.hidden_size, config.hidden_size)
-        self.value = nn.Linear(config.hidden_size, config.hidden_size)
+        if fused_qkv:
+            self.qkv_proj = nn.Linear(config.hidden_size, 3 * config.hidden_size)
+        else:
+            self.query = nn.Linear(config.hidden_size, config.hidden_size)
+            self.key = nn.Linear(config.hidden_size, config.hidden_size)
+            self.value = nn.Linear(config.hidden_size, config.hidden_size)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
@@ -64,16 +79,27 @@ class BertAttention(nn.Module):
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
 
-        q = self.query(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.key(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.value(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        if self.fused_qkv:
+            qkv = self.qkv_proj(hidden_states)
+            q, k, v = qkv.chunk(3, dim=-1)
+            q = q.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+            k = k.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+            v = v.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        else:
+            q = self.query(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+            k = self.key(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.value(hidden_states).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Bidirectional — no causal mask
         attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
 
-        # Post-norm: residual + dense + LayerNorm
-        return self.LayerNorm(hidden_states + self.dense(attn_out))
+        # Post-norm: fused residual + LayerNorm
+        normed, _ = _residual_layer_norm(
+            hidden_states, self.dense(attn_out),
+            self.LayerNorm.weight, self.LayerNorm.bias, self.layer_norm_eps,
+        )
+        return normed
 
 
 class BertMLP(nn.Module):
@@ -82,18 +108,24 @@ class BertMLP(nn.Module):
         self.dense_in = nn.Linear(config.hidden_size, config.intermediate_size)
         self.dense_out = nn.Linear(config.intermediate_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.layer_norm_eps = config.layer_norm_eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         residual = hidden_states
         hidden_states = F.gelu(self.dense_in(hidden_states))
         hidden_states = self.dense_out(hidden_states)
-        return self.LayerNorm(residual + hidden_states)
+        # Post-norm: fused residual + LayerNorm
+        normed, _ = _residual_layer_norm(
+            residual, hidden_states,
+            self.LayerNorm.weight, self.LayerNorm.bias, self.layer_norm_eps,
+        )
+        return normed
 
 
 class BertBlock(nn.Module):
-    def __init__(self, config: BertConfig):
+    def __init__(self, config: BertConfig, fused_qkv: bool = False):
         super().__init__()
-        self.attention = BertAttention(config)
+        self.attention = BertAttention(config, fused_qkv=fused_qkv)
         self.mlp = BertMLP(config)
 
     def forward(
@@ -107,11 +139,15 @@ class BertBlock(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(self, config: BertConfig):
+    def __init__(self, config: BertConfig, fused_projections: bool = False):
         super().__init__()
         self.config = config
+        self.fused_projections = fused_projections
         self.embeddings = BertEmbeddings(config)
-        self.layers = nn.ModuleList([BertBlock(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            BertBlock(config, fused_qkv=fused_projections)
+            for _ in range(config.num_hidden_layers)
+        ])
 
     def forward(
         self,
@@ -180,7 +216,11 @@ class BertEncoder(nn.Module):
         type_emb = self.embeddings.token_type_embeddings(
             torch.zeros(T, dtype=torch.long, device=input_ids.device)
         )
-        hidden_states = self.embeddings.LayerNorm(word_emb + pos_emb + type_emb)
+        hidden_states = _fused_layer_norm(
+            word_emb + pos_emb + type_emb,
+            self.embeddings.LayerNorm.weight, self.embeddings.LayerNorm.bias,
+            self.embeddings.LayerNorm.eps,
+        )
 
         # Try to use efficient varlen backend for packed bidirectional attention
         use_varlen = self._can_use_varlen(hidden_states)
@@ -239,9 +279,16 @@ class BertEncoder(nn.Module):
         num_heads = attn.num_heads
         head_dim = attn.head_dim
 
-        q = attn.query(hidden_states).view(T, num_heads, head_dim)
-        k = attn.key(hidden_states).view(T, num_heads, head_dim)
-        v = attn.value(hidden_states).view(T, num_heads, head_dim)
+        if attn.fused_qkv:
+            qkv = attn.qkv_proj(hidden_states)
+            q, k, v = qkv.chunk(3, dim=-1)
+            q = q.view(T, num_heads, head_dim)
+            k = k.view(T, num_heads, head_dim)
+            v = v.view(T, num_heads, head_dim)
+        else:
+            q = attn.query(hidden_states).view(T, num_heads, head_dim)
+            k = attn.key(hidden_states).view(T, num_heads, head_dim)
+            v = attn.value(hidden_states).view(T, num_heads, head_dim)
 
         # Use flash_attn or varlen_attn with causal=False
         attn_out = None
@@ -262,10 +309,13 @@ class BertEncoder(nn.Module):
             )
 
         attn_out = attn_out.reshape(T, -1)
-        # Post-norm: LayerNorm(residual + dense(attn_out))
-        hidden_states = attn.LayerNorm(hidden_states + attn.dense(attn_out))
+        # Post-norm: fused residual + LayerNorm
+        hidden_states, _ = _residual_layer_norm(
+            hidden_states, attn.dense(attn_out),
+            attn.LayerNorm.weight, attn.LayerNorm.bias, attn.layer_norm_eps,
+        )
 
-        # MLP with post-norm
-        hidden_states = layer.mlp(hidden_states.unsqueeze(0)).squeeze(0)
+        # MLP with post-norm (uses fused residual layer norm internally)
+        hidden_states = layer.mlp(hidden_states)
 
         return hidden_states

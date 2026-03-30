@@ -23,6 +23,8 @@ from lset.models.decoder.qwen3.attention import (
     apply_rotary_pos_emb,
 )
 from lset.kernels import residual_rms_norm as _residual_rms_norm
+from lset.kernels import rms_norm as _fused_rms_norm
+from lset.kernels import geglu as _geglu
 from .config import GemmaConfig
 
 
@@ -35,11 +37,7 @@ class GemmaRMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_dtype = x.dtype
-        x = x.float()
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.eps)
-        return ((1.0 + self.weight.float()) * x).to(input_dtype)
+        return _fused_rms_norm(x, 1.0 + self.weight, self.eps)
 
 
 class GemmaRotaryEmbedding(nn.Module):
@@ -159,8 +157,8 @@ class GemmaMLP(nn.Module):
         if self.fused_gate_up:
             gate_up = self.gate_up_proj(x)
             gate, up = gate_up.chunk(2, dim=-1)
-            return self.down_proj(F.gelu(gate, approximate="tanh") * up)
-        return self.down_proj(F.gelu(self.gate_proj(x), approximate="tanh") * self.up_proj(x))
+            return self.down_proj(_geglu(gate, up))
+        return self.down_proj(_geglu(self.gate_proj(x), self.up_proj(x)))
 
 
 class GemmaBlock(nn.Module):

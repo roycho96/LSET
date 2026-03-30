@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .config import LlamaConfig
+from lset.kernels import swiglu
 
 
 class LlamaMLP(nn.Module):
@@ -24,5 +24,5 @@ class LlamaMLP(nn.Module):
         if self.fused_gate_up:
             gate_up = self.gate_up_proj(x)
             gate, up = gate_up.chunk(2, dim=-1)
-            return self.down_proj(F.silu(gate) * up)
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+            return self.down_proj(swiglu(gate, up))
+        return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
