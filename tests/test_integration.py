@@ -6,7 +6,7 @@ from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
 from lset.tasks.grad_cache import GradCacheWrapper
-from lset.data.packing import pack_sequences
+from lset.train.data.packing import pack_sequences
 
 
 def _make_packed_batches(B=4, device="cpu"):

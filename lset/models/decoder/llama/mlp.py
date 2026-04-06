@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .config import LlamaConfig
+from lset.models.decoder.llama.config import LlamaConfig
 from lset.kernels import swiglu
 
 

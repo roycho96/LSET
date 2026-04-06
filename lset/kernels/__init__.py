@@ -1,16 +1,16 @@
 """Triton kernels for embedding training optimizations."""
 
-from .fused_normalize import normalize, fused_l2_normalize
-from .fused_loss import fused_dense_loss, should_use_fused
-from .fused_rmsnorm import rms_norm, fused_rms_norm
-from .fused_residual_rmsnorm import residual_rms_norm, fused_residual_rms_norm
-from .fused_layernorm import layer_norm, fused_layer_norm
-from .fused_residual_layernorm import residual_layer_norm, fused_residual_layer_norm
-from .fused_pool_normalize import fused_pool_normalize
-from .fused_rope import apply_rotary_pos_emb, fused_apply_rotary_pos_emb
-from .fused_swiglu import swiglu, fused_swiglu
-from .fused_geglu import geglu, fused_geglu
-from .triton_segment_pool import triton_segment_mean_pool
+from lset.kernels.normalize import normalize, fused_l2_normalize
+from lset.kernels.loss import fused_dense_loss, should_use_fused
+from lset.kernels.rmsnorm import rms_norm, fused_rms_norm
+from lset.kernels.residual_rmsnorm import residual_rms_norm, fused_residual_rms_norm
+from lset.kernels.layernorm import layer_norm, fused_layer_norm
+from lset.kernels.residual_layernorm import residual_layer_norm, fused_residual_layer_norm
+from lset.kernels.pool_normalize import fused_pool_normalize
+from lset.kernels.rope import apply_rotary_pos_emb, fused_apply_rotary_pos_emb
+from lset.kernels.swiglu import swiglu, fused_swiglu
+from lset.kernels.geglu import geglu, fused_geglu
+from lset.kernels.segment_pool import triton_segment_mean_pool
 
 __all__ = [
     "normalize", "fused_l2_normalize",
@@ -23,4 +23,5 @@ __all__ = [
     "apply_rotary_pos_emb", "fused_apply_rotary_pos_emb",
     "swiglu", "fused_swiglu",
     "geglu", "fused_geglu",
+    "triton_segment_mean_pool",
 ]

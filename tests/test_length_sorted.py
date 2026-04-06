@@ -1,8 +1,7 @@
 """Tests for length-sorted batching in EmbeddingCollator."""
 
-import pytest
 from unittest.mock import MagicMock
-from lset.data.collator import EmbeddingCollator
+from lset.train.data.collator import EmbeddingCollator
 
 
 def _mock_tokenizer():

@@ -1,7 +1,5 @@
 """Tests for YAML config system."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 

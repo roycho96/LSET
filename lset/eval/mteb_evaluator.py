@@ -15,15 +15,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..models.registry import detect_model_type, get_model_spec
-from ..tasks.pooling import pool
+from lset.models.registry import detect_model_type, get_model_spec
+from lset.tasks.pooling import pool
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +81,7 @@ class LSETMTEBModel:
         model.load_state_dict(state_dict, strict=True)
         model = model.to(dtype=dtype, device=device)
 
-        from ..tokenization.loader import load_tokenizer
+        from lset.tokenization import load_tokenizer
         tokenizer = load_tokenizer(model_path)
 
         effective_pooling = pooling or spec.default_pooling

@@ -12,12 +12,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from lset.models.decoder.qwen3.attention import (
-    Qwen3RMSNorm as LlamaRMSNorm,
     apply_rotary_pos_emb,
     _flash_or_sdpa_packed,
 )
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
-from .config import LlamaConfig
+from lset.models.decoder.llama.config import LlamaConfig
 
 
 class LlamaRotaryEmbedding(nn.Module):

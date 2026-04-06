@@ -6,7 +6,6 @@ Every training/eval option is represented as a typed dataclass field.
 
 from __future__ import annotations
 
-import copy
 import typing
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
@@ -50,6 +49,10 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
     seed: int = 42
     temperature: float = 0.02
+    top_k: Optional[int] = None  # truncated InfoNCE: keep only top-K negatives
+    cascade: bool = False         # cascade proxy InfoNCE (Phase 11)
+    cascade_d_small: int = 64
+    cascade_K_prime: int = 256
     matryoshka_dims: Optional[List[int]] = None
 
 
@@ -63,6 +66,7 @@ class GradCacheConfig:
     enabled: bool = False
     token_budget: int = 4096            # primary: max tokens per chunk
     chunk_size: Optional[int] = None    # fallback: fixed sequence count per chunk
+    selective_backward_keep: float = 1.0  # fraction of samples to re-encode in backward (1.0=all)
 
 
 @dataclass
@@ -83,6 +87,7 @@ class KernelsConfig:
     fused: bool = True                     # master switch
     fused_residual_rmsnorm: bool = True
     fused_pool_normalize: bool = True
+    fused_layernorm: bool = False          # disabled: PyTorch cuDNN is faster
 
 
 @dataclass

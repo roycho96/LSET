@@ -4,7 +4,6 @@ PP is NOT compatible with bi-encoder (separate query/doc forward).
 This module provides structure for future reranker/single-input tasks.
 """
 
-import torch.nn as nn
 
 
 def get_pp_split_points(config, num_stages: int) -> dict:

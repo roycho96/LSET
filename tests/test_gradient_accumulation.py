@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.tasks.losses.infonce import infonce_loss
+from lset.losses.infonce import infonce_loss
 
 
 def test_grad_accum_matches_large_batch():

@@ -12,11 +12,11 @@ from torch.optim import AdamW
 from lset.models import get_model_spec
 from lset.tasks.bi_encoder import BiEncoderTask
 from lset.tasks.grad_cache import GradCacheWrapper
-from lset.data.collator import LeftPadCollator, RightPadCollator, EmbeddingCollator
+from lset.train.data.collator import LeftPadCollator, RightPadCollator, EmbeddingCollator
 from lset.distributed.parallel import setup_fsdp2, build_parallel_model, ParallelConfig
 from lset.train.scheduler import build_scheduler
-from lset.core.checkpoint import save_checkpoint, load_checkpoint
-from lset.core.logging import TrainLogger
+from lset.train.checkpoint import save_checkpoint, load_checkpoint
+from lset.train.logging import TrainLogger
 
 
 def _clip_grad_norm_tp(model: nn.Module, max_norm: float):
@@ -54,6 +54,7 @@ class TrainingEngine:
         use_grad_cache: bool = False,
         gc_chunk_size: int = 16,
         gc_token_budget: int | None = None,
+        gc_selective_keep: float = 1.0,
         gradient_accumulation_steps: int = 1,
         save_steps: int = 0,
         output_dir: str = "./output",
@@ -79,6 +80,12 @@ class TrainingEngine:
         attn_backend: str = "auto",
         # CUDA graph (padded mode only)
         cuda_graph: bool = False,
+        # Truncated InfoNCE
+        top_k: int | None = None,
+        # Cascade InfoNCE
+        cascade: bool = False,
+        cascade_d_small: int = 64,
+        cascade_K_prime: int = 256,
     ):
         # Validate CUDA graph compatibility
         if cuda_graph:
@@ -143,13 +150,13 @@ class TrainingEngine:
 
         # Apply FP8 (before TP/FSDP, after weights loaded)
         if fp8:
-            from lset.distributed.fp8 import apply_fp8_training
+            from lset.train.quantization.fp8 import apply_fp8_training
             apply_fp8_training(self.model, recipe=fp8_recipe)
 
         # Apply QLoRA (quantize then LoRA — before TP/FSDP)
         lora_target_list = lora_targets if lora_targets else None
         if qlora:
-            from lset.modules.qlora import apply_qlora
+            from lset.train.lora import apply_qlora
             apply_qlora(
                 self.model, r=lora_r, alpha=lora_alpha,
                 target_modules=lora_target_list or ("q_proj", "k_proj", "v_proj",
@@ -157,7 +164,7 @@ class TrainingEngine:
                 dropout=lora_dropout, block_size=qlora_block_size,
             )
         elif lora:
-            from lset.modules.lora import apply_lora
+            from lset.train.lora import apply_lora
             apply_lora(
                 self.model, r=lora_r, alpha=lora_alpha,
                 target_modules=lora_target_list or ("q_proj", "k_proj", "v_proj",
@@ -186,6 +193,10 @@ class TrainingEngine:
             pooling=spec.default_pooling,
             temperature=temperature,
             matryoshka_dims=matryoshka_dims,
+            top_k=top_k,
+            cascade=cascade,
+            cascade_d_small=cascade_d_small,
+            cascade_K_prime=cascade_K_prime,
         )
 
         # GradCache
@@ -194,11 +205,12 @@ class TrainingEngine:
             self.grad_cache = GradCacheWrapper(
                 self.task, chunk_size=gc_chunk_size,
                 token_budget=gc_token_budget,
+                selective_keep=gc_selective_keep,
             )
 
         # Optimizer — only LoRA params when using LoRA/QLoRA
         if self.use_lora:
-            from lset.modules.lora import get_lora_params
+            from lset.train.lora import get_lora_params
             opt_params = get_lora_params(self.model)
         else:
             opt_params = list(self.model.parameters())
@@ -221,7 +233,7 @@ class TrainingEngine:
         if collator is not None:
             actual_collator = collator
         elif is_new_format:
-            from lset.tokenization.loader import load_tokenizer
+            from lset.tokenization import load_tokenizer
             tokenizer = load_tokenizer(model_path)
             actual_collator = EmbeddingCollator(
                 tokenizer=tokenizer,
@@ -230,7 +242,7 @@ class TrainingEngine:
             )
             self.use_label_matrix = True
         elif packed:
-            from lset.data.packed_collator import PackedCollator
+            from lset.train.data.packed_collator import PackedCollator
             actual_collator = PackedCollator()
         else:
             with open(f"{model_path}/config.json") as f:

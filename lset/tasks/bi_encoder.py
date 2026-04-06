@@ -3,13 +3,13 @@
 import torch
 import torch.nn as nn
 
-from .pooling import pool
-from .packed_pooling import packed_pool
-from .gather import gather_with_grad
-from .losses.infonce import infonce_loss
-from .losses.contrastive import contrastive_loss
-from .losses.fused_contrastive import fused_contrastive_loss
-from .losses.matryoshka import matryoshka_loss
+from lset.tasks.pooling import pool
+from lset.tasks.packed_pooling import packed_pool
+from lset.tasks.gather import gather_with_grad
+from lset.losses.infonce import infonce_loss
+from lset.losses.fused_contrastive import fused_contrastive_loss
+from lset.losses.matryoshka import matryoshka_loss
+from lset.losses.cascade_infonce import cascade_infonce_loss
 
 
 def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
@@ -38,12 +38,19 @@ def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
 
 class BiEncoderTask(nn.Module):
     def __init__(self, pooling: str = "last_token", normalize: bool = True,
-                 temperature: float = 0.02, matryoshka_dims: list[int] | None = None):
+                 temperature: float = 0.02, matryoshka_dims: list[int] | None = None,
+                 top_k: int | None = None,
+                 cascade: bool = False, cascade_d_small: int = 64,
+                 cascade_K_prime: int = 256):
         super().__init__()
         self.pooling = pooling
         self.normalize = normalize
         self.temperature = temperature
         self.matryoshka_dims = matryoshka_dims
+        self.top_k = top_k
+        self.cascade = cascade
+        self.cascade_d_small = cascade_d_small
+        self.cascade_K_prime = cascade_K_prime
 
     def encode(self, model: nn.Module, batch: dict) -> torch.Tensor:
         if "cu_seqlens" in batch:
@@ -107,7 +114,12 @@ class BiEncoderTask(nn.Module):
             # Legacy: diagonal positive (backward compatible)
             if self.matryoshka_dims is not None:
                 loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature)
+            elif self.cascade:
+                loss = cascade_infonce_loss(
+                    q_emb, d_emb, self.temperature,
+                    d_small=self.cascade_d_small, K_prime=self.cascade_K_prime,
+                )
             else:
-                loss = infonce_loss(q_emb, d_emb, self.temperature)
+                loss = infonce_loss(q_emb, d_emb, self.temperature, self.top_k)
 
         return {"loss": loss, "query_embeds": q_emb.detach(), "doc_embeds": d_emb.detach()}

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import torch
 
-from .bi_encoder import BiEncoderTask
-from .gather import gather_with_grad
-from .losses.infonce import infonce_loss
-from .losses.fused_contrastive import fused_contrastive_loss
-from .losses.matryoshka import matryoshka_loss
+from lset.tasks.bi_encoder import BiEncoderTask
+from lset.tasks.gather import gather_with_grad
+from lset.losses.infonce import infonce_loss
+from lset.losses.fused_contrastive import fused_contrastive_loss
+from lset.losses.matryoshka import matryoshka_loss
 
 
 def _plan_chunks_token_budget(seq_lengths, budget):
@@ -42,10 +42,12 @@ class GradCacheWrapper:
     """
 
     def __init__(self, task: BiEncoderTask, chunk_size: int = 16,
-                 token_budget: int | None = None):
+                 token_budget: int | None = None,
+                 selective_keep: float = 1.0):
         self.task = task
         self.chunk_size = chunk_size
         self.token_budget = token_budget
+        self.selective_keep = selective_keep
 
     def __call__(self, model, query_batch, doc_batch, labels=None, scores=None,
                  pos_qi=None, pos_di=None, pos_counts=None):
@@ -63,7 +65,7 @@ class GradCacheWrapper:
         d_emb = d_emb.detach().requires_grad_(True)
 
         if labels is not None:
-            from .bi_encoder import _expand_labels_for_gather
+            from lset.tasks.bi_encoder import _expand_labels_for_gather
             labels = labels.to(q_emb.device)
             labels = _expand_labels_for_gather(labels, q_emb.shape[0], d_emb.shape[0])
             s = None
@@ -86,8 +88,16 @@ class GradCacheWrapper:
             if self.task.matryoshka_dims:
                 loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
                                        self.task.temperature)
+            elif self.task.cascade:
+                from lset.losses.cascade_infonce import cascade_infonce_loss
+                loss = cascade_infonce_loss(
+                    q_emb, d_emb, self.task.temperature,
+                    d_small=self.task.cascade_d_small,
+                    K_prime=self.task.cascade_K_prime,
+                )
             else:
-                loss = infonce_loss(q_emb, d_emb, self.task.temperature)
+                loss = infonce_loss(q_emb, d_emb, self.task.temperature,
+                                    self.task.top_k)
 
         loss.backward()
         q_grad = q_emb.grad.clone()
@@ -119,12 +129,27 @@ class GradCacheWrapper:
 
     def _backward_padded_chunks(self, model, batch, grads):
         B = batch["input_ids"].shape[0]
-        for s in range(0, B, self.chunk_size):
-            e = min(s + self.chunk_size, B)
-            chunk = {k: v[s:e] for k, v in batch.items() if isinstance(v, torch.Tensor)}
-            chunk = self._trim_chunk(chunk)
-            emb = self.task.encode(model, chunk)
-            (emb * grads[s:e]).sum().backward()
+
+        if self.selective_keep < 1.0:
+            # Selective backward: only re-encode samples with large gradient
+            grad_norms = grads.norm(dim=1)  # (B,)
+            N_keep = max(1, int(B * self.selective_keep))
+            important_idx = grad_norms.topk(N_keep).indices.sort().values
+            # Re-encode only important samples
+            for s in range(0, len(important_idx), self.chunk_size):
+                e = min(s + self.chunk_size, len(important_idx))
+                idx = important_idx[s:e]
+                chunk = {k: v[idx] for k, v in batch.items() if isinstance(v, torch.Tensor)}
+                chunk = self._trim_chunk(chunk)
+                emb = self.task.encode(model, chunk)
+                (emb * grads[idx]).sum().backward()
+        else:
+            for s in range(0, B, self.chunk_size):
+                e = min(s + self.chunk_size, B)
+                chunk = {k: v[s:e] for k, v in batch.items() if isinstance(v, torch.Tensor)}
+                chunk = self._trim_chunk(chunk)
+                emb = self.task.encode(model, chunk)
+                (emb * grads[s:e]).sum().backward()
 
     def _backward_packed_chunks(self, model, batch, grads):
         """Chunk by sequence count or token budget using cu_seqlens."""

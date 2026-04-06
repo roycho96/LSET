@@ -11,9 +11,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
-from .attention import LlamaRotaryEmbedding
-from .block import LlamaBlock
-from .config import LlamaConfig
+from lset.models.decoder.llama.attention import LlamaRotaryEmbedding
+from lset.models.decoder.llama.block import LlamaBlock
+from lset.models.decoder.llama.config import LlamaConfig
 
 
 class LlamaDecoder(nn.Module):

@@ -1,9 +1,8 @@
 """Pooling strategies for embedding extraction."""
 
 import torch
-import torch.nn.functional as F
 
-from ..kernels.fused_normalize import normalize as _normalize
+from lset.kernels.normalize import normalize as _normalize
 
 
 def pool(hidden_states: torch.Tensor, attention_mask: torch.Tensor,

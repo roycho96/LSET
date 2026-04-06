@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import BertConfig
+from lset.models.encoder.bert.config import BertConfig
 from lset.kernels import layer_norm as _fused_layer_norm
 from lset.kernels import residual_layer_norm as _residual_layer_norm
 

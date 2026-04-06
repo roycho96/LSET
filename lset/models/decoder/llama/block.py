@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 
 from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
-from .attention import LlamaAttention
-from .config import LlamaConfig
-from .mlp import LlamaMLP
+from lset.models.decoder.llama.attention import LlamaAttention
+from lset.models.decoder.llama.config import LlamaConfig
+from lset.models.decoder.llama.mlp import LlamaMLP
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 

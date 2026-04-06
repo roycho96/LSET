@@ -1,11 +1,10 @@
 """Pooling strategies for packed (variable-length) hidden states."""
 
 import torch
-import torch.nn.functional as F
 
-from ..kernels.fused_normalize import normalize as _normalize
-from ..kernels.fused_pool_normalize import fused_pool_normalize as _fused_pool_normalize
-from ..kernels.triton_segment_pool import triton_segment_mean_pool as _triton_segment_mean
+from lset.kernels.normalize import normalize as _normalize
+from lset.kernels.pool_normalize import fused_pool_normalize as _fused_pool_normalize
+from lset.kernels.segment_pool import triton_segment_mean_pool as _triton_segment_mean
 
 
 def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,

@@ -20,8 +20,8 @@ import torch.nn as nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
 
-from .mesh import build_mesh
-from .tp import apply_tp
+from lset.distributed.mesh import build_mesh
+from lset.distributed.tp import apply_tp
 
 
 @dataclass

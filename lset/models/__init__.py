@@ -1,12 +1,12 @@
 """Model registry."""
 
-from .registry import ModelSpec, register_model, register_alias, get_model_spec
+from lset.models.registry import ModelSpec, register_model, register_alias, get_model_spec as get_model_spec
 
 # --- Qwen3 ---
-from .decoder.qwen3.config import Qwen3Config
-from .decoder.qwen3.model import Qwen3Decoder
-from .decoder.qwen3.weights import load_qwen3_weights
-from .decoder.qwen3.parallel_plan import get_tp_plan as qwen3_tp_plan
+from lset.models.decoder.qwen3.config import Qwen3Config
+from lset.models.decoder.qwen3.model import Qwen3Decoder
+from lset.models.decoder.qwen3.weights import load_qwen3_weights
+from lset.models.decoder.qwen3.parallel_plan import get_tp_plan as qwen3_tp_plan
 
 register_model("qwen3", ModelSpec(
     config_cls=Qwen3Config,
@@ -19,10 +19,10 @@ register_model("qwen3", ModelSpec(
 register_alias("qwen3-embedding", "qwen3")
 
 # --- Llama ---
-from .decoder.llama.config import LlamaConfig
-from .decoder.llama.model import LlamaDecoder
-from .decoder.llama.weights import load_llama_weights
-from .decoder.llama.parallel_plan import get_tp_plan as llama_tp_plan
+from lset.models.decoder.llama.config import LlamaConfig
+from lset.models.decoder.llama.model import LlamaDecoder
+from lset.models.decoder.llama.weights import load_llama_weights
+from lset.models.decoder.llama.parallel_plan import get_tp_plan as llama_tp_plan
 
 register_model("llama", ModelSpec(
     config_cls=LlamaConfig,
@@ -36,10 +36,10 @@ register_alias("llama-nemotron-embed", "llama")
 register_alias("nv-embed", "llama")
 
 # --- BERT ---
-from .encoder.bert.config import BertConfig
-from .encoder.bert.model import BertEncoder
-from .encoder.bert.weights import load_bert_weights, load_xlm_roberta_weights
-from .encoder.bert.parallel_plan import get_tp_plan as bert_tp_plan
+from lset.models.encoder.bert.config import BertConfig
+from lset.models.encoder.bert.model import BertEncoder
+from lset.models.encoder.bert.weights import load_bert_weights, load_xlm_roberta_weights
+from lset.models.encoder.bert.parallel_plan import get_tp_plan as bert_tp_plan
 
 register_model("bert", ModelSpec(
     config_cls=BertConfig,
@@ -62,10 +62,10 @@ register_model("xlm-roberta", ModelSpec(
 register_alias("bge-m3", "xlm-roberta")
 
 # --- EmbeddingGemma ---
-from .decoder.gemma.config import GemmaConfig
-from .decoder.gemma.model import GemmaEmbeddingModel
-from .decoder.gemma.weights import load_gemma_weights
-from .decoder.gemma.parallel_plan import get_tp_plan as gemma_tp_plan
+from lset.models.decoder.gemma.config import GemmaConfig
+from lset.models.decoder.gemma.model import GemmaEmbeddingModel
+from lset.models.decoder.gemma.weights import load_gemma_weights
+from lset.models.decoder.gemma.parallel_plan import get_tp_plan as gemma_tp_plan
 
 register_model("embeddinggemma", ModelSpec(
     config_cls=GemmaConfig,

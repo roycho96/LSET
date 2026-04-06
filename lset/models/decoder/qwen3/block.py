@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .attention import Qwen3Attention, Qwen3RMSNorm
-from .config import Qwen3Config
-from .mlp import Qwen3MLP
+from lset.models.decoder.qwen3.attention import Qwen3Attention, Qwen3RMSNorm
+from lset.models.decoder.qwen3.config import Qwen3Config
+from lset.models.decoder.qwen3.mlp import Qwen3MLP
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 

@@ -13,8 +13,8 @@ def train(config: LSETConfig):
     import torch
     from pathlib import Path
 
-    from lset.tokenization.loader import load_tokenizer
-    from lset.data.dataset import EmbeddingDataset
+    from lset.tokenization import load_tokenizer
+    from lset.train.data.dataset import EmbeddingDataset
     from lset.train.engine import TrainingEngine
     from lset.models.registry import detect_model_type
 
@@ -25,11 +25,14 @@ def train(config: LSETConfig):
     if not config.kernels.fused:
         os.environ["LSET_DISABLE_FUSED_RESIDUAL_RMSNORM"] = "1"
         os.environ["LSET_DISABLE_FUSED_POOL_NORMALIZE"] = "1"
+        os.environ["LSET_DISABLE_FUSED_LAYERNORM"] = "1"
     else:
         if not config.kernels.fused_residual_rmsnorm:
             os.environ["LSET_DISABLE_FUSED_RESIDUAL_RMSNORM"] = "1"
         if not config.kernels.fused_pool_normalize:
             os.environ["LSET_DISABLE_FUSED_POOL_NORMALIZE"] = "1"
+        if not config.kernels.fused_layernorm:
+            os.environ["LSET_DISABLE_FUSED_LAYERNORM"] = "1"
 
     # Set attention backend
     from lset.models.decoder.qwen3.attention import set_attn_backend
@@ -91,6 +94,11 @@ def train(config: LSETConfig):
         fp8_recipe=config.fp8.recipe,
         attn_backend=config.attention.backend,
         cuda_graph=config.cuda_graph.enabled,
+        top_k=config.training.top_k,
+        cascade=config.training.cascade,
+        cascade_d_small=config.training.cascade_d_small,
+        cascade_K_prime=config.training.cascade_K_prime,
+        gc_selective_keep=config.grad_cache.selective_backward_keep,
     )
 
     # Compile

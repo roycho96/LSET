@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .attention import Qwen3RMSNorm, Qwen3RotaryEmbedding
-from .block import Qwen3Block
-from .config import Qwen3Config
+from lset.models.decoder.qwen3.attention import Qwen3RMSNorm, Qwen3RotaryEmbedding
+from lset.models.decoder.qwen3.block import Qwen3Block
+from lset.models.decoder.qwen3.config import Qwen3Config
 
 
 class Qwen3Decoder(nn.Module):

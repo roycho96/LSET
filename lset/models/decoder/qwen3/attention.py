@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import Qwen3Config
+from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.kernels import rms_norm as _fused_rms_norm
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 

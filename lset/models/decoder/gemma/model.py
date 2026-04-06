@@ -19,13 +19,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from lset.models.decoder.qwen3.attention import (
-    _rotate_half,
     apply_rotary_pos_emb,
 )
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 from lset.kernels import rms_norm as _fused_rms_norm
 from lset.kernels import geglu as _geglu
-from .config import GemmaConfig
+from lset.models.decoder.gemma.config import GemmaConfig
 
 
 class GemmaRMSNorm(nn.Module):
