@@ -3,17 +3,16 @@
 import torch
 import torch.nn as nn
 
-from lset.tasks.pooling import pool
-from lset.tasks.packed_pooling import packed_pool
-from lset.tasks.gather import gather_with_grad
-from lset.losses.infonce import infonce_loss
-from lset.losses.fused_contrastive import fused_contrastive_loss
-from lset.losses.matryoshka import matryoshka_loss
 from lset.losses.cascade_infonce import cascade_infonce_loss
+from lset.losses.fused_contrastive import fused_contrastive_loss
+from lset.losses.infonce import infonce_loss
+from lset.losses.matryoshka import matryoshka_loss
+from lset.tasks.gather import gather_with_grad
+from lset.tasks.packed_pooling import packed_pool
+from lset.tasks.pooling import pool
 
 
-def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
-                               fill: float = 0.0) -> torch.Tensor:
+def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int, fill: float = 0.0) -> torch.Tensor:
     """Expand local label matrix to match gathered embedding sizes.
 
     When using gather_with_grad in multi-GPU, embeddings grow but labels stay local.
@@ -25,6 +24,7 @@ def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
         return labels
 
     import torch.distributed as dist
+
     if not dist.is_initialized():
         return labels
 
@@ -32,16 +32,22 @@ def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int,
     full = torch.full((total_q, total_d), fill, device=labels.device, dtype=labels.dtype)
     q_start = rank * local_q
     d_start = rank * local_d
-    full[q_start:q_start + local_q, d_start:d_start + local_d] = labels
+    full[q_start : q_start + local_q, d_start : d_start + local_d] = labels
     return full
 
 
 class BiEncoderTask(nn.Module):
-    def __init__(self, pooling: str = "last_token", normalize: bool = True,
-                 temperature: float = 0.02, matryoshka_dims: list[int] | None = None,
-                 top_k: int | None = None,
-                 cascade: bool = False, cascade_d_small: int = 64,
-                 cascade_K_prime: int = 256):
+    def __init__(
+        self,
+        pooling: str = "last_token",
+        normalize: bool = True,
+        temperature: float = 0.02,
+        matryoshka_dims: list[int] | None = None,
+        top_k: int | None = None,
+        cascade: bool = False,
+        cascade_d_small: int = 64,
+        cascade_K_prime: int = 256,
+    ):
         super().__init__()
         self.pooling = pooling
         self.normalize = normalize
@@ -64,18 +70,26 @@ class BiEncoderTask(nn.Module):
 
     def _encode_packed(self, model: nn.Module, batch: dict) -> torch.Tensor:
         out = model.forward_packed(
-            batch["input_ids"], batch["position_ids"],
-            batch["cu_seqlens"], batch["max_seqlen"],
+            batch["input_ids"],
+            batch["position_ids"],
+            batch["cu_seqlens"],
+            batch["max_seqlen"],
         )
         norm = self.normalize and self.matryoshka_dims is None
         return packed_pool(out["hidden_states"], batch["cu_seqlens"], self.pooling, norm)
 
-    def forward(self, model: nn.Module, query_batch: dict, doc_batch: dict,
-                neg_batch: dict | None = None, labels: torch.Tensor | None = None,
-                scores: torch.Tensor | None = None,
-                pos_qi: torch.Tensor | None = None,
-                pos_di: torch.Tensor | None = None,
-                pos_counts: torch.Tensor | None = None) -> dict:
+    def forward(
+        self,
+        model: nn.Module,
+        query_batch: dict,
+        doc_batch: dict,
+        neg_batch: dict | None = None,
+        labels: torch.Tensor | None = None,
+        scores: torch.Tensor | None = None,
+        pos_qi: torch.Tensor | None = None,
+        pos_di: torch.Tensor | None = None,
+        pos_counts: torch.Tensor | None = None,
+    ) -> dict:
         q_emb = self.encode(model, query_batch)
         d_emb = self.encode(model, doc_batch)
 
@@ -95,20 +109,24 @@ class BiEncoderTask(nn.Module):
             s = None
             if scores is not None:
                 s = scores.to(q_emb.device)
-                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
-                                               fill=float("-inf"))
+                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0], fill=float("-inf"))
             # Move pos_qi/pos_di/pos_counts to device
             pqi = pos_qi.to(q_emb.device) if pos_qi is not None else None
             pdi = pos_di.to(q_emb.device) if pos_di is not None else None
             pco = pos_counts.to(q_emb.device) if pos_counts is not None else None
 
             if self.matryoshka_dims:
-                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims,
-                                       self.temperature, labels)
+                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature, labels)
             else:
                 loss = fused_contrastive_loss(
-                    q_emb, d_emb, labels, self.temperature, s,
-                    pos_qi=pqi, pos_di=pdi, pos_counts=pco,
+                    q_emb,
+                    d_emb,
+                    labels,
+                    self.temperature,
+                    s,
+                    pos_qi=pqi,
+                    pos_di=pdi,
+                    pos_counts=pco,
                 )
         else:
             # Legacy: diagonal positive (backward compatible)
@@ -116,8 +134,11 @@ class BiEncoderTask(nn.Module):
                 loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature)
             elif self.cascade:
                 loss = cascade_infonce_loss(
-                    q_emb, d_emb, self.temperature,
-                    d_small=self.cascade_d_small, K_prime=self.cascade_K_prime,
+                    q_emb,
+                    d_emb,
+                    self.temperature,
+                    d_small=self.cascade_d_small,
+                    K_prime=self.cascade_K_prime,
                 )
             else:
                 loss = infonce_loss(q_emb, d_emb, self.temperature, self.top_k)

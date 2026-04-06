@@ -17,8 +17,10 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+from torch.distributed.fsdp import MixedPrecisionPolicy
+from torch.distributed.fsdp import fully_shard
 
 from lset.distributed.mesh import build_mesh
 from lset.distributed.tp import apply_tp
@@ -75,6 +77,7 @@ def build_parallel_model(
     # Step 1: TP (before FSDP)
     if parallel_config.tp_size > 1:
         from lset.models.decoder.qwen3.parallel_plan import get_tp_plan
+
         tp_mesh = mesh["tp"]
         plan = get_tp_plan(
             config,
@@ -111,13 +114,13 @@ def _apply_ac(model: nn.Module, ratio: float):
         def make_wrapper(fn):
             def wrapped(*args, **kwargs):
                 return checkpoint(fn, *args, use_reentrant=False, **kwargs)
+
             return wrapped
 
         layers[i].forward = make_wrapper(orig_forward)
 
 
-def _apply_fsdp2(model: nn.Module, dp_mesh: DeviceMesh, mp_dtype: torch.dtype,
-                  enable_prefetch: bool = True):
+def _apply_fsdp2(model: nn.Module, dp_mesh: DeviceMesh, mp_dtype: torch.dtype, enable_prefetch: bool = True):
     """Bottom-up FSDP2 sharding with optional communication prefetch."""
     mp_policy = MixedPrecisionPolicy(
         param_dtype=mp_dtype,

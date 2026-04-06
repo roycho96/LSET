@@ -7,9 +7,15 @@ Every training/eval option is represented as a typed dataclass field.
 from __future__ import annotations
 
 import typing
-from dataclasses import dataclass, field, fields, asdict
+
+from dataclasses import asdict
+from dataclasses import dataclass
+from dataclasses import field
+from dataclasses import fields
 from pathlib import Path
-from typing import Optional, List, get_type_hints
+from typing import List
+from typing import Optional
+from typing import get_type_hints
 
 
 def _resolve_path(p: str) -> str:
@@ -25,8 +31,8 @@ def _resolve_path(p: str) -> str:
 @dataclass
 class ModelConfig:
     path: str = ""
-    pooling: str = "auto"           # auto | last_token | mean | cls
-    padding_side: str = "auto"      # auto | left | right
+    pooling: str = "auto"  # auto | last_token | mean | cls
+    padding_side: str = "auto"  # auto | left | right
     fused_projections: bool = False  # fuse QKV and GateUp
 
 
@@ -43,14 +49,14 @@ class TrainingConfig:
     lr: float = 2e-5
     max_steps: Optional[int] = None  # None = use epochs
     epochs: int = 1
-    scheduler: str = "cosine"        # cosine | linear | wsd | constant
+    scheduler: str = "cosine"  # cosine | linear | wsd | constant
     warmup_steps: int = 0
     grad_clip: float = 1.0
     gradient_accumulation_steps: int = 1
     seed: int = 42
     temperature: float = 0.02
     top_k: Optional[int] = None  # truncated InfoNCE: keep only top-K negatives
-    cascade: bool = False         # cascade proxy InfoNCE (Phase 11)
+    cascade: bool = False  # cascade proxy InfoNCE (Phase 11)
     cascade_d_small: int = 64
     cascade_K_prime: int = 256
     matryoshka_dims: Optional[List[int]] = None
@@ -64,8 +70,8 @@ class PackingConfig:
 @dataclass
 class GradCacheConfig:
     enabled: bool = False
-    token_budget: int = 4096            # primary: max tokens per chunk
-    chunk_size: Optional[int] = None    # fallback: fixed sequence count per chunk
+    token_budget: int = 4096  # primary: max tokens per chunk
+    chunk_size: Optional[int] = None  # fallback: fixed sequence count per chunk
     selective_backward_keep: float = 1.0  # fraction of samples to re-encode in backward (1.0=all)
 
 
@@ -84,15 +90,15 @@ class CudaGraphConfig:
 
 @dataclass
 class KernelsConfig:
-    fused: bool = True                     # master switch
+    fused: bool = True  # master switch
     fused_residual_rmsnorm: bool = True
     fused_pool_normalize: bool = True
-    fused_layernorm: bool = False          # disabled: PyTorch cuDNN is faster
+    fused_layernorm: bool = False  # disabled: PyTorch cuDNN is faster
 
 
 @dataclass
 class AttentionConfig:
-    backend: str = "auto"           # auto | flash_attn | varlen_attn | sdpa
+    backend: str = "auto"  # auto | flash_attn | varlen_attn | sdpa
 
 
 @dataclass
@@ -119,7 +125,7 @@ class QloraConfig:
 @dataclass
 class Fp8Config:
     enabled: bool = False
-    recipe: str = "rowwise"         # rowwise | tensorwise
+    recipe: str = "rowwise"  # rowwise | tensorwise
 
 
 @dataclass
@@ -171,6 +177,7 @@ class LSETConfig:
     def from_yaml(cls, path: str | Path) -> LSETConfig:
         """Load config from YAML file."""
         import yaml
+
         with open(path) as f:
             raw = yaml.safe_load(f) or {}
         return cls._from_dict(raw)
@@ -228,9 +235,7 @@ class LSETConfig:
     def validate(self):
         """Validate config. Raise clear errors for invalid combinations."""
         if self.cuda_graph.enabled and self.packing.enabled and not self.cuda_graph.token_budget:
-            raise ValueError(
-                "cuda_graph.enabled + packing.enabled requires cuda_graph.token_budget"
-            )
+            raise ValueError("cuda_graph.enabled + packing.enabled requires cuda_graph.token_budget")
         if self.qlora.enabled and self.distributed.tp_size > 1:
             raise ValueError("QLoRA + TP is not supported (NF4 + TP not in torchao)")
         if self.fp8.enabled and (self.lora.enabled or self.qlora.enabled):
@@ -245,6 +250,7 @@ class LSETConfig:
     def to_yaml(self, path: str | Path):
         """Save config to YAML for reproducibility."""
         import yaml
+
         with open(path, "w") as f:
             yaml.dump(asdict(self), f, default_flow_style=False, sort_keys=False)
 

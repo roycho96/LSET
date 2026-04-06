@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import torch
 
+from lset.losses.fused_contrastive import fused_contrastive_loss
+from lset.losses.infonce import infonce_loss
+from lset.losses.matryoshka import matryoshka_loss
 from lset.tasks.bi_encoder import BiEncoderTask
 from lset.tasks.gather import gather_with_grad
-from lset.losses.infonce import infonce_loss
-from lset.losses.fused_contrastive import fused_contrastive_loss
-from lset.losses.matryoshka import matryoshka_loss
 
 
 def _plan_chunks_token_budget(seq_lengths, budget):
@@ -41,16 +41,17 @@ class GradCacheWrapper:
     3. Replay: Re-encode in chunks → surrogate backward with cached grads
     """
 
-    def __init__(self, task: BiEncoderTask, chunk_size: int = 16,
-                 token_budget: int | None = None,
-                 selective_keep: float = 1.0):
+    def __init__(
+        self, task: BiEncoderTask, chunk_size: int = 16, token_budget: int | None = None, selective_keep: float = 1.0
+    ):
         self.task = task
         self.chunk_size = chunk_size
         self.token_budget = token_budget
         self.selective_keep = selective_keep
 
-    def __call__(self, model, query_batch, doc_batch, labels=None, scores=None,
-                 pos_qi=None, pos_di=None, pos_counts=None):
+    def __call__(
+        self, model, query_batch, doc_batch, labels=None, scores=None, pos_qi=None, pos_di=None, pos_counts=None
+    ):
         # Step 1: no_grad encode
         with torch.no_grad():
             q_emb = self.task.encode(model, query_batch)
@@ -66,38 +67,44 @@ class GradCacheWrapper:
 
         if labels is not None:
             from lset.tasks.bi_encoder import _expand_labels_for_gather
+
             labels = labels.to(q_emb.device)
             labels = _expand_labels_for_gather(labels, q_emb.shape[0], d_emb.shape[0])
             s = None
             if scores is not None:
                 s = scores.to(q_emb.device)
-                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0],
-                                               fill=float("-inf"))
+                s = _expand_labels_for_gather(s, q_emb.shape[0], d_emb.shape[0], fill=float("-inf"))
             pqi = pos_qi.to(q_emb.device) if pos_qi is not None else None
             pdi = pos_di.to(q_emb.device) if pos_di is not None else None
             pco = pos_counts.to(q_emb.device) if pos_counts is not None else None
             if self.task.matryoshka_dims:
-                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
-                                       self.task.temperature, labels)
+                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims, self.task.temperature, labels)
             else:
                 loss = fused_contrastive_loss(
-                    q_emb, d_emb, labels, self.task.temperature, s,
-                    pos_qi=pqi, pos_di=pdi, pos_counts=pco,
+                    q_emb,
+                    d_emb,
+                    labels,
+                    self.task.temperature,
+                    s,
+                    pos_qi=pqi,
+                    pos_di=pdi,
+                    pos_counts=pco,
                 )
         else:
             if self.task.matryoshka_dims:
-                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims,
-                                       self.task.temperature)
+                loss = matryoshka_loss(q_emb, d_emb, self.task.matryoshka_dims, self.task.temperature)
             elif self.task.cascade:
                 from lset.losses.cascade_infonce import cascade_infonce_loss
+
                 loss = cascade_infonce_loss(
-                    q_emb, d_emb, self.task.temperature,
+                    q_emb,
+                    d_emb,
+                    self.task.temperature,
                     d_small=self.task.cascade_d_small,
                     K_prime=self.task.cascade_K_prime,
                 )
             else:
-                loss = infonce_loss(q_emb, d_emb, self.task.temperature,
-                                    self.task.top_k)
+                loss = infonce_loss(q_emb, d_emb, self.task.temperature, self.task.top_k)
 
         loss.backward()
         q_grad = q_emb.grad.clone()
@@ -160,13 +167,12 @@ class GradCacheWrapper:
             seq_lengths = (cu[1:] - cu[:-1]).tolist()
             chunk_ranges = _plan_chunks_token_budget(seq_lengths, self.token_budget)
         else:
-            chunk_ranges = [(s, min(s + self.chunk_size, num_seqs))
-                            for s in range(0, num_seqs, self.chunk_size)]
+            chunk_ranges = [(s, min(s + self.chunk_size, num_seqs)) for s in range(0, num_seqs, self.chunk_size)]
 
         for seq_s, seq_e in chunk_ranges:
             tok_s = int(cu[seq_s])
             tok_e = int(cu[seq_e])
-            chunk_cu = cu[seq_s:seq_e + 1] - cu[seq_s]
+            chunk_cu = cu[seq_s : seq_e + 1] - cu[seq_s]
             chunk = {
                 "input_ids": batch["input_ids"][tok_s:tok_e],
                 "position_ids": batch["position_ids"][tok_s:tok_e],

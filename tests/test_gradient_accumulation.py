@@ -41,6 +41,5 @@ def test_grad_accum_matches_large_batch():
 
     # Note: the losses won't be identical because the contrastive matrix is different
     # (8x8 vs 2x2). But gradients should be in the same direction.
-    cos_sim = F.cosine_similarity(grad_large.flatten().unsqueeze(0),
-                                   grad_accum.flatten().unsqueeze(0))
+    cos_sim = F.cosine_similarity(grad_large.flatten().unsqueeze(0), grad_accum.flatten().unsqueeze(0))
     assert cos_sim > 0.5, f"Gradient direction similarity too low: {cos_sim.item()}"

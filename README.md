@@ -1,2 +1,3 @@
 # LSET
-Large Scale Embedding Trainer — PyTorch-native training framework for large-scale embedding and reranker models
+
+A PyTorch-native embedding model training framework with fused Triton kernels, sequence packing, and multi-GPU parallelism.

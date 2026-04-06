@@ -27,7 +27,7 @@ def contrastive_loss(
 
     if scores is not None:
         # Soft label cross-entropy
-        mask = (labels >= 0)
+        mask = labels >= 0
         # Replace -inf scores with very negative value for softmax
         safe_scores = scores.clone()
         safe_scores[~mask] = float("-inf")

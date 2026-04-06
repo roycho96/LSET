@@ -21,9 +21,9 @@ def _reference_residual_rms_norm(residual, attn_out, weight, eps=1e-6):
 
 
 class TestFusedResidualRMSNorm:
-
     def test_numerical_match_bf16(self, device):
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         N, D = 128, 1024
         residual = torch.randn(N, D, device=device, dtype=torch.bfloat16)
         attn_out = torch.randn(N, D, device=device, dtype=torch.bfloat16)
@@ -37,6 +37,7 @@ class TestFusedResidualRMSNorm:
 
     def test_numerical_match_fp32(self, device):
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         N, D = 64, 512
         residual = torch.randn(N, D, device=device, dtype=torch.float32)
         attn_out = torch.randn(N, D, device=device, dtype=torch.float32)
@@ -51,6 +52,7 @@ class TestFusedResidualRMSNorm:
     def test_3d_tensor(self, device):
         """Works with (B, S, D) inputs."""
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         B, S, D = 2, 64, 256
         residual = torch.randn(B, S, D, device=device, dtype=torch.bfloat16)
         attn_out = torch.randn(B, S, D, device=device, dtype=torch.bfloat16)
@@ -63,6 +65,7 @@ class TestFusedResidualRMSNorm:
     def test_gradient_correctness(self, device):
         """Gradient matches reference implementation (fp32)."""
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         N, D = 16, 64
         residual = torch.randn(N, D, device=device, dtype=torch.float32, requires_grad=True)
         attn_out = torch.randn(N, D, device=device, dtype=torch.float32, requires_grad=True)
@@ -90,6 +93,7 @@ class TestFusedResidualRMSNorm:
 
     def test_backward_matches_pytorch(self, device):
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         N, D = 32, 256
         residual = torch.randn(N, D, device=device, dtype=torch.float32, requires_grad=True)
         attn_out = torch.randn(N, D, device=device, dtype=torch.float32, requires_grad=True)
@@ -107,6 +111,7 @@ class TestFusedResidualRMSNorm:
     def test_grad_cache_compatible(self, device):
         """Weight gradient flows through normal autograd (not custom Function)."""
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         D = 64
         residual = torch.randn(8, D, device=device, dtype=torch.bfloat16, requires_grad=True)
         attn_out = torch.randn(8, D, device=device, dtype=torch.bfloat16, requires_grad=True)
@@ -120,6 +125,7 @@ class TestFusedResidualRMSNorm:
     def test_auto_dispatch_fallback(self):
         """CPU/small inputs fall back to PyTorch."""
         from lset.kernels.residual_rmsnorm import residual_rms_norm
+
         residual = torch.randn(4, 64)
         attn_out = torch.randn(4, 64)
         weight = torch.ones(64)
@@ -130,6 +136,7 @@ class TestFusedResidualRMSNorm:
     def test_memory_reduction(self, device):
         """Fused path should not create an intermediate tensor for the add."""
         from lset.kernels.residual_rmsnorm import fused_residual_rms_norm
+
         N, D = 1024, 1024
         residual = torch.randn(N, D, device=device, dtype=torch.bfloat16)
         attn_out = torch.randn(N, D, device=device, dtype=torch.bfloat16)
@@ -150,5 +157,4 @@ class TestFusedResidualRMSNorm:
         expected_alloc = 2 * N * D * 2 + N * 4
         actual_alloc = after - before
         # Allow 20% overhead for Triton workspace
-        assert actual_alloc < expected_alloc * 1.2, \
-            f"Allocated {actual_alloc} bytes, expected ~{expected_alloc}"
+        assert actual_alloc < expected_alloc * 1.2, f"Allocated {actual_alloc} bytes, expected ~{expected_alloc}"

@@ -14,6 +14,7 @@ import math
 import torch
 import triton
 import triton.language as tl
+
 from torch import Tensor
 
 _BLOCK_SIZE = 2048
@@ -26,12 +27,13 @@ _TANH_COEFF = 0.044715
 # Forward Kernel
 # =============================================================================
 
+
 @triton.jit
 def _geglu_fwd_kernel(
-    Gate,       # [total] flattened gate_proj output
-    Up,         # [total] flattened up_proj output
-    Out,        # [total] output
-    N,          # total number of elements
+    Gate,  # [total] flattened gate_proj output
+    Up,  # [total] flattened up_proj output
+    Out,  # [total] output
+    N,  # total number of elements
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -55,13 +57,14 @@ def _geglu_fwd_kernel(
 # Backward Kernel
 # =============================================================================
 
+
 @triton.jit
 def _geglu_bwd_kernel(
-    GradOut,    # [total] upstream gradient
-    Gate,       # [total] gate_proj output (saved from forward)
-    Up,         # [total] up_proj output (saved from forward)
-    GradGate,   # [total] gradient for gate
-    GradUp,     # [total] gradient for up
+    GradOut,  # [total] upstream gradient
+    Gate,  # [total] gate_proj output (saved from forward)
+    Up,  # [total] up_proj output (saved from forward)
+    GradGate,  # [total] gradient for gate
+    GradUp,  # [total] gradient for up
     N,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -105,8 +108,8 @@ def _geglu_bwd_kernel(
 # Autograd Function
 # =============================================================================
 
-class FusedGeGLU(torch.autograd.Function):
 
+class FusedGeGLU(torch.autograd.Function):
     @staticmethod
     def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:
         gate_c = gate.contiguous()
@@ -115,8 +118,7 @@ class FusedGeGLU(torch.autograd.Function):
         N = gate_c.numel()
 
         grid = (triton.cdiv(N, _BLOCK_SIZE),)
-        _geglu_fwd_kernel[grid](gate_c, up_c, out, N,
-                                BLOCK_SIZE=_BLOCK_SIZE, num_warps=_NUM_WARPS)
+        _geglu_fwd_kernel[grid](gate_c, up_c, out, N, BLOCK_SIZE=_BLOCK_SIZE, num_warps=_NUM_WARPS)
 
         ctx.save_for_backward(gate_c, up_c)
         return out
@@ -130,8 +132,9 @@ class FusedGeGLU(torch.autograd.Function):
         N = gate.numel()
 
         grid = (triton.cdiv(N, _BLOCK_SIZE),)
-        _geglu_bwd_kernel[grid](grad_out_c, gate, up, grad_gate, grad_up, N,
-                                BLOCK_SIZE=_BLOCK_SIZE, num_warps=_NUM_WARPS)
+        _geglu_bwd_kernel[grid](
+            grad_out_c, gate, up, grad_gate, grad_up, N, BLOCK_SIZE=_BLOCK_SIZE, num_warps=_NUM_WARPS
+        )
 
         return grad_gate, grad_up
 

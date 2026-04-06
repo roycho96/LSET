@@ -1,6 +1,7 @@
 """Tests for LR schedulers."""
 
 import torch
+
 from lset.train.scheduler import build_scheduler
 
 
@@ -71,8 +72,7 @@ def test_wsd_scheduler():
     """WSD scheduler: warmup → stable → decay."""
     model = torch.nn.Linear(10, 10)
     optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
-    scheduler = build_scheduler(optimizer, "wsd", max_steps=100,
-                                warmup_steps=10, stable_ratio=0.6)
+    scheduler = build_scheduler(optimizer, "wsd", max_steps=100, warmup_steps=10, stable_ratio=0.6)
 
     lrs = []
     for _ in range(100):

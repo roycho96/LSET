@@ -29,13 +29,16 @@ class TestGemmaFusedResidualRMSNorm:
         new_residual_ref = residual + attn_out
         x_f32 = new_residual_ref.float()
         variance = x_f32.pow(2).mean(-1, keepdim=True)
-        normed_ref = (x_f32 * torch.rsqrt(variance + eps))
+        normed_ref = x_f32 * torch.rsqrt(variance + eps)
         out_ref = ((1.0 + weight.float()) * normed_ref).to(torch.bfloat16)
 
         # Fused: pass (1 + weight) to residual_rms_norm
         effective_weight = 1.0 + weight
         out_fused, new_residual_fused = residual_rms_norm(
-            residual, attn_out, effective_weight, eps,
+            residual,
+            attn_out,
+            effective_weight,
+            eps,
         )
 
         torch.testing.assert_close(new_residual_fused, new_residual_ref, atol=1e-2, rtol=1e-2)
@@ -44,12 +47,18 @@ class TestGemmaFusedResidualRMSNorm:
     def test_gemma_block_output_unchanged(self, device):
         """GemmaBlock with fused norm produces same output as reference."""
         from lset.models.decoder.gemma.config import GemmaConfig
-        from lset.models.decoder.gemma.model import GemmaBlock, GemmaRotaryEmbedding
+        from lset.models.decoder.gemma.model import GemmaBlock
+        from lset.models.decoder.gemma.model import GemmaRotaryEmbedding
 
         config = GemmaConfig(
-            num_hidden_layers=1, hidden_size=64, intermediate_size=128,
-            num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=1,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
             query_pre_attn_scalar=16.0,
         )
         block = GemmaBlock(config, is_sliding=False).to(device=device, dtype=torch.bfloat16)
@@ -90,9 +99,14 @@ class TestGemmaFusedResidualRMSNorm:
         from lset.models.decoder.gemma.model import GemmaEmbeddingModel
 
         config = GemmaConfig(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
             query_pre_attn_scalar=16.0,
         )
         model = GemmaEmbeddingModel(config).to(device=device, dtype=torch.bfloat16)
@@ -109,9 +123,14 @@ class TestGemmaFusedResidualRMSNorm:
         from lset.models.decoder.gemma.model import GemmaEmbeddingModel
 
         config = GemmaConfig(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
             query_pre_attn_scalar=16.0,
         )
         model = GemmaEmbeddingModel(config).to(device=device, dtype=torch.bfloat16)

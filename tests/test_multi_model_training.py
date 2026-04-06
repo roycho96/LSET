@@ -43,20 +43,20 @@ def _train_model(model_name: str, model_path: str, n_steps: int = 10):
 class TestMultiModelTraining:
     def test_qwen3_training(self):
         losses = _train_model("qwen3", "/home/roy/models/Qwen3-Embedding-0.6B")
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)
 
     def test_llama_training(self):
         losses = _train_model("llama", "/home/roy/models/llama-nemotron-embed-1b-v2")
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)
 
     def test_bert_training(self):
         losses = _train_model("bert", "/home/roy/models/bert-base-uncased")
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)
 
     def test_bge_m3_training(self):
         losses = _train_model("xlm-roberta", "/home/roy/models/bge-m3")
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)
 
     def test_embeddinggemma_training(self):
         losses = _train_model("embeddinggemma", "/home/roy/models/embeddinggemma-300m")
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)

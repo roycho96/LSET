@@ -7,22 +7,21 @@ Run with:
 """
 
 import os
+
 import pytest
 import torch
 import torch.distributed as dist
 
+from lset.distributed.parallel import ParallelConfig
+from lset.distributed.parallel import build_parallel_model
 from lset.models import get_model_spec
-from lset.distributed.parallel import build_parallel_model, ParallelConfig
 
 
 def _is_distributed():
     return os.environ.get("RANK") is not None
 
 
-requires_distributed = pytest.mark.skipif(
-    not _is_distributed(),
-    reason="Requires torchrun with 2+ GPUs"
-)
+requires_distributed = pytest.mark.skipif(not _is_distributed(), reason="Requires torchrun with 2+ GPUs")
 
 
 @requires_distributed
@@ -53,7 +52,7 @@ def test_tp_with_sequence_parallel():
         hs = out["hidden_states"]
         assert hs.shape == (1, 4, config.hidden_size)
         # Verify it's a plain tensor, not DTensor (full_tensor was called)
-        assert type(hs) == torch.Tensor, f"Expected plain Tensor, got {type(hs)}"
+        assert type(hs) is torch.Tensor, f"Expected plain Tensor, got {type(hs)}"
 
     # Training
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
@@ -69,7 +68,7 @@ def test_tp_with_sequence_parallel():
         optimizer.zero_grad()
         losses.append(loss.item())
 
-    assert all(not torch.isnan(torch.tensor(l)) for l in losses), "NaN detected"
+    assert all(not torch.isnan(torch.tensor(v)) for v in losses), "NaN detected"
 
     # Measure memory savings from SP
     torch.cuda.reset_peak_memory_stats()

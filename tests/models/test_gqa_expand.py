@@ -50,9 +50,14 @@ class TestGQARepeatInterleave:
         from lset.models.decoder.qwen3.model import Qwen3Decoder
 
         config = Qwen3Config(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=8, num_key_value_heads=4, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
         )
         model = Qwen3Decoder(config).to(device=device, dtype=torch.bfloat16)
         ids = torch.randint(0, 100, (2, 16), device=device)

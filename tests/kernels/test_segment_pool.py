@@ -17,7 +17,8 @@ def _reference_segment_mean(hidden, cu_seqlens, normalize=False):
     H = hidden.shape[-1]
     lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).long()
     seq_ids = torch.repeat_interleave(
-        torch.arange(M, device=hidden.device), lengths,
+        torch.arange(M, device=hidden.device),
+        lengths,
     )
     emb = torch.zeros(M, H, dtype=hidden.dtype, device=hidden.device)
     emb.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden), hidden)
@@ -95,8 +96,9 @@ class TestTritonSegmentMean:
             length = e - s
             expected_grad = 1.0 / length
             actual = hidden.grad[s:e].mean().item()
-            assert abs(actual - expected_grad) < 0.01, \
+            assert abs(actual - expected_grad) < 0.01, (
                 f"Segment {i}: expected grad ~{expected_grad:.4f}, got {actual:.4f}"
+            )
 
     def test_gradient_normalize(self, device):
         from lset.kernels.segment_pool import triton_segment_mean_pool

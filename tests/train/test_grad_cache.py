@@ -1,6 +1,7 @@
 """Tests for GradCache — verify loss matches standard forward."""
 
 import torch
+
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
@@ -9,9 +10,16 @@ from lset.tasks.grad_cache import GradCacheWrapper
 
 def _make_model_and_data(B=4, S=8):
     """Create small model and synthetic batches."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=100, max_position_embeddings=64)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=100,
+        max_position_embeddings=64,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
 
     query_batch = {
@@ -117,7 +125,7 @@ def test_dynamic_trim_reduces_length():
     chunk["attention_mask"] = torch.zeros(2, 16, dtype=torch.long)
     chunk["attention_mask"][:, -4:] = 1  # Last 4 positions are real
 
-    trimmed = gc._trim_chunk(chunk)
+    gc._trim_chunk(chunk)
     # Since real tokens end at position 16, attention_mask sum = 4,
     # max_len = 4, but we need to keep the last 4 positions
     # Actually trim just keeps [:max_len] = [:4], which for left-padded

@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from lset.models.decoder.llama.config import LlamaConfig
 from lset.kernels import swiglu
+from lset.models.decoder.llama.config import LlamaConfig
 
 
 class LlamaMLP(nn.Module):

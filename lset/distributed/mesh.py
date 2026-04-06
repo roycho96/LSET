@@ -1,6 +1,7 @@
 """Multi-dimensional DeviceMesh construction for TP/PP/FSDP2 composition."""
 
-from torch.distributed.device_mesh import init_device_mesh, DeviceMesh
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.device_mesh import init_device_mesh
 
 
 def build_mesh(dp_size: int, tp_size: int = 1, pp_size: int = 1) -> DeviceMesh:

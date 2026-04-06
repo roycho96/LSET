@@ -7,13 +7,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from lset.train.lora import (
-    LoRALinear,
-    apply_lora,
-    get_lora_params,
-    save_lora_weights,
-    load_lora_weights,
-)
+from lset.train.lora import LoRALinear
+from lset.train.lora import apply_lora
+from lset.train.lora import get_lora_params
+from lset.train.lora import load_lora_weights
+from lset.train.lora import save_lora_weights
 
 
 @pytest.fixture
@@ -27,9 +25,11 @@ def simple_model():
     """A tiny model mimicking Qwen3 structure for apply_lora testing."""
     torch.manual_seed(42)
     model = nn.Module()
-    model.layers = nn.ModuleList([
-        nn.Module(),
-    ])
+    model.layers = nn.ModuleList(
+        [
+            nn.Module(),
+        ]
+    )
     layer = model.layers[0]
     layer.self_attn = nn.Module()
     layer.self_attn.q_proj = nn.Linear(64, 64, bias=False, dtype=torch.bfloat16)
@@ -89,9 +89,7 @@ class TestLoRALinear:
     def test_dropout(self, base_linear):
         lora = LoRALinear(base_linear, r=4, alpha=8.0, dropout=0.1)
         assert isinstance(lora.dropout, nn.Dropout)
-        lora_no_drop = LoRALinear(
-            nn.Linear(64, 128, bias=False, dtype=torch.bfloat16), r=4, alpha=8.0
-        )
+        lora_no_drop = LoRALinear(nn.Linear(64, 128, bias=False, dtype=torch.bfloat16), r=4, alpha=8.0)
         assert isinstance(lora_no_drop.dropout, nn.Identity)
 
 

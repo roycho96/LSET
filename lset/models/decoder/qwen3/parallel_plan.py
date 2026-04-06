@@ -6,17 +6,17 @@ Three plan types:
 3. LoRA-aware — targets base_linear + lora adapters within LoRALinear wrappers
 """
 
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    RowwiseParallel,
-    SequenceParallel,
-)
-from torch.distributed._tensor import Replicate, Shard
+from torch.distributed._tensor import Replicate
+from torch.distributed._tensor import Shard
+from torch.distributed.tensor.parallel import ColwiseParallel
+from torch.distributed.tensor.parallel import PrepareModuleInput
+from torch.distributed.tensor.parallel import RowwiseParallel
+from torch.distributed.tensor.parallel import SequenceParallel
 
 
-def get_tp_plan(config, use_sequence_parallel: bool = False, use_lora: bool = False,
-                fused_projections: bool = False) -> dict:
+def get_tp_plan(
+    config, use_sequence_parallel: bool = False, use_lora: bool = False, fused_projections: bool = False
+) -> dict:
     """Get TP parallelization plan for Qwen3Decoder.
 
     Args:
@@ -42,8 +42,7 @@ def _get_basic_plan(config, use_lora: bool = False, fused_projections: bool = Fa
         if fused_projections and not use_lora:
             colwise = ["self_attn.qkv_proj", "mlp.gate_up_proj"]
         else:
-            colwise = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-                        "mlp.gate_proj", "mlp.up_proj"]
+            colwise = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "mlp.gate_proj", "mlp.up_proj"]
         rowwise = ["self_attn.o_proj", "mlp.down_proj"]
 
         if use_lora:
@@ -93,30 +92,29 @@ def _get_sp_plan(config, fused_projections: bool = False) -> dict:
 
     for i in range(config.num_hidden_layers):
         p = f"layers.{i}"
-        plan.update({
-            # Block norms: SequenceParallel
-            f"{p}.input_layernorm": SequenceParallel(),
-            f"{p}.post_attention_layernorm": SequenceParallel(),
-
-            # Attention: convert Shard(1) → Replicate before entering
-            f"{p}.self_attn": PrepareModuleInput(
-                input_layouts=(Shard(1), None, None, None),
-                desired_input_layouts=(Replicate(), None, None, None),
-            ),
-
-            # MLP: convert Shard(1) → Replicate
-            f"{p}.mlp": PrepareModuleInput(
-                input_layouts=(Shard(1),),
-                desired_input_layouts=(Replicate(),),
-            ),
-        })
+        plan.update(
+            {
+                # Block norms: SequenceParallel
+                f"{p}.input_layernorm": SequenceParallel(),
+                f"{p}.post_attention_layernorm": SequenceParallel(),
+                # Attention: convert Shard(1) → Replicate before entering
+                f"{p}.self_attn": PrepareModuleInput(
+                    input_layouts=(Shard(1), None, None, None),
+                    desired_input_layouts=(Replicate(), None, None, None),
+                ),
+                # MLP: convert Shard(1) → Replicate
+                f"{p}.mlp": PrepareModuleInput(
+                    input_layouts=(Shard(1),),
+                    desired_input_layouts=(Replicate(),),
+                ),
+            }
+        )
 
         # Colwise targets
         if fused_projections:
             colwise_names = ["self_attn.qkv_proj", "mlp.gate_up_proj"]
         else:
-            colwise_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-                             "mlp.gate_proj", "mlp.up_proj"]
+            colwise_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "mlp.gate_proj", "mlp.up_proj"]
         # Rowwise targets (with SP output)
         rowwise_sp = {"self_attn.o_proj": Shard(1), "mlp.down_proj": Shard(1)}
 

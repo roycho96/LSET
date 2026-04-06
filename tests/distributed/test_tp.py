@@ -23,9 +23,10 @@ def test_tp_basic_plan_keys():
 
 def test_tp_sp_plan_keys():
     """SP plan should have extra entries for norms, embedding, PrepareModuleInput."""
-    from torch.distributed.tensor.parallel import (
-        SequenceParallel, PrepareModuleInput, RowwiseParallel,
-    )
+    from torch.distributed.tensor.parallel import PrepareModuleInput
+    from torch.distributed.tensor.parallel import RowwiseParallel
+    from torch.distributed.tensor.parallel import SequenceParallel
+
     config = Qwen3Config(num_hidden_layers=2)
     plan = get_tp_plan(config, use_sequence_parallel=True)
 
@@ -44,7 +45,9 @@ def test_tp_sp_plan_keys():
 
 def test_tp_plan_correct_parallelism_types():
     """Verify ColwiseParallel for Q/K/V, RowwiseParallel for O/down."""
-    from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+    from torch.distributed.tensor.parallel import ColwiseParallel
+    from torch.distributed.tensor.parallel import RowwiseParallel
+
     config = Qwen3Config(num_hidden_layers=2)
     plan = get_tp_plan(config, use_sequence_parallel=False)
 
@@ -57,9 +60,12 @@ def test_tp_plan_correct_parallelism_types():
 def test_attention_local_head_computation():
     """Attention should dynamically compute local heads from output size."""
     from lset.models.decoder.qwen3.attention import Qwen3Attention
+
     config = Qwen3Config(
-        hidden_size=128, num_attention_heads=8,
-        num_key_value_heads=4, head_dim=16,
+        hidden_size=128,
+        num_attention_heads=8,
+        num_key_value_heads=4,
+        head_dim=16,
     )
     attn = Qwen3Attention(config)
     x = torch.randn(2, 4, 128)

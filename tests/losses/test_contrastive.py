@@ -23,8 +23,7 @@ def test_single_positive_matches_infonce():
     labels.fill_diagonal_(1.0)
     loss_new = contrastive_loss(q, d, labels, temp)
 
-    assert torch.allclose(loss_old, loss_new, atol=1e-5), \
-        f"InfoNCE={loss_old.item()}, Contrastive={loss_new.item()}"
+    assert torch.allclose(loss_old, loss_new, atol=1e-5), f"InfoNCE={loss_old.item()}, Contrastive={loss_new.item()}"
 
 
 def test_multi_positive_produces_gradient():

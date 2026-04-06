@@ -2,7 +2,8 @@
 
 import pytest
 
-from lset.distributed.pp import get_pp_split_points, get_stage_module_names
+from lset.distributed.pp import get_pp_split_points
+from lset.distributed.pp import get_stage_module_names
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.train.data.collator import FixedLengthCollator
 
@@ -53,10 +54,14 @@ def test_fixed_length_collator_shape():
     collator = FixedLengthCollator(pad_token_id=0, max_seq_length=16)
 
     batch = [
-        {"query": {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]},
-         "positive": {"input_ids": [4, 5], "attention_mask": [1, 1]}},
-        {"query": {"input_ids": [6, 7, 8, 9, 10], "attention_mask": [1, 1, 1, 1, 1]},
-         "positive": {"input_ids": [11], "attention_mask": [1]}},
+        {
+            "query": {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]},
+            "positive": {"input_ids": [4, 5], "attention_mask": [1, 1]},
+        },
+        {
+            "query": {"input_ids": [6, 7, 8, 9, 10], "attention_mask": [1, 1, 1, 1, 1]},
+            "positive": {"input_ids": [11], "attention_mask": [1]},
+        },
     ]
     result = collator(batch)
     assert result["query"]["input_ids"].shape == (2, 16)
@@ -68,8 +73,10 @@ def test_fixed_length_truncation():
     """FixedLengthCollator should truncate to max_seq_length."""
     collator = FixedLengthCollator(pad_token_id=0, max_seq_length=4)
     batch = [
-        {"query": {"input_ids": [1, 2, 3, 4, 5, 6], "attention_mask": [1, 1, 1, 1, 1, 1]},
-         "positive": {"input_ids": [7, 8], "attention_mask": [1, 1]}},
+        {
+            "query": {"input_ids": [1, 2, 3, 4, 5, 6], "attention_mask": [1, 1, 1, 1, 1, 1]},
+            "positive": {"input_ids": [7, 8], "attention_mask": [1, 1]},
+        },
     ]
     result = collator(batch)
     assert result["query"]["input_ids"].shape == (1, 4)

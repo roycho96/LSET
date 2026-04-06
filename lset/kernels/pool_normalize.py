@@ -12,12 +12,13 @@ Saves: 1 full (num_seqs, D) read+write per encode call.
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Fused Gather + Normalize (for last_token / cls)
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -30,12 +31,14 @@ from torch import Tensor
 )
 @triton.jit
 def _gather_normalize_fwd_kernel(
-    HIDDEN,         # [T, D] packed hidden states
-    INDICES,        # [M] gather indices
-    Y,              # [M, D] output (normalized)
-    NORMS,          # [M] L2 norms (for backward)
-    M, D,
-    stride_h, stride_y,
+    HIDDEN,  # [T, D] packed hidden states
+    INDICES,  # [M] gather indices
+    Y,  # [M, D] output (normalized)
+    NORMS,  # [M] L2 norms (for backward)
+    M,
+    D,
+    stride_h,
+    stride_y,
     eps,
     BLOCK_D: tl.constexpr,
 ):
@@ -79,13 +82,16 @@ def _gather_normalize_fwd_kernel(
 )
 @triton.jit
 def _gather_normalize_bwd_kernel(
-    GRAD_Y,         # [M, D] upstream gradient
-    Y,              # [M, D] normalized output from forward
-    NORMS,          # [M] norms from forward
-    GRAD_HIDDEN,    # [T, D] output gradient (scatter into)
-    INDICES,        # [M] gather indices
-    M, D,
-    stride_gy, stride_y, stride_gh,
+    GRAD_Y,  # [M, D] upstream gradient
+    Y,  # [M, D] normalized output from forward
+    NORMS,  # [M] norms from forward
+    GRAD_HIDDEN,  # [T, D] output gradient (scatter into)
+    INDICES,  # [M] gather indices
+    M,
+    D,
+    stride_gy,
+    stride_y,
+    stride_gh,
     BLOCK_D: tl.constexpr,
 ):
     row = tl.program_id(0)
@@ -121,6 +127,7 @@ def _gather_normalize_bwd_kernel(
 # Fused Divide + Normalize (for mean pooling after scatter_add_)
 # =============================================================================
 
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
@@ -132,12 +139,14 @@ def _gather_normalize_bwd_kernel(
 )
 @triton.jit
 def _div_normalize_fwd_kernel(
-    X,              # [M, D] summed hidden states (from scatter_add_)
-    LENGTHS,        # [M] sequence lengths
-    Y,              # [M, D] output (divided + normalized)
-    NORMS,          # [M] L2 norms after division (for backward)
-    M, D,
-    stride_x, stride_y,
+    X,  # [M, D] summed hidden states (from scatter_add_)
+    LENGTHS,  # [M] sequence lengths
+    Y,  # [M, D] output (divided + normalized)
+    NORMS,  # [M] L2 norms after division (for backward)
+    M,
+    D,
+    stride_x,
+    stride_y,
     eps,
     BLOCK_D: tl.constexpr,
 ):
@@ -184,13 +193,16 @@ def _div_normalize_fwd_kernel(
 )
 @triton.jit
 def _div_normalize_bwd_kernel(
-    GRAD_Y,         # [M, D]
-    Y,              # [M, D] forward output
-    NORMS,          # [M] norms from forward
-    LENGTHS,        # [M] sequence lengths
-    GRAD_X,         # [M, D] output gradient
-    M, D,
-    stride_gy, stride_y, stride_gx,
+    GRAD_Y,  # [M, D]
+    Y,  # [M, D] forward output
+    NORMS,  # [M] norms from forward
+    LENGTHS,  # [M] sequence lengths
+    GRAD_X,  # [M, D] output gradient
+    M,
+    D,
+    stride_gy,
+    stride_y,
+    stride_gx,
     eps,
     BLOCK_D: tl.constexpr,
 ):
@@ -226,6 +238,7 @@ def _div_normalize_bwd_kernel(
 # Autograd Functions
 # =============================================================================
 
+
 class _FusedGatherNormalizeFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, hidden_states: Tensor, indices: Tensor, total_tokens: int, eps: float):
@@ -238,9 +251,14 @@ class _FusedGatherNormalizeFn(torch.autograd.Function):
         norms = torch.empty(M, device=hidden_states.device, dtype=torch.float32)
 
         _gather_normalize_fwd_kernel[(M,)](
-            hidden_2d, indices_long, y, norms,
-            M, D,
-            hidden_2d.stride(0), y.stride(0),
+            hidden_2d,
+            indices_long,
+            y,
+            norms,
+            M,
+            D,
+            hidden_2d.stride(0),
+            y.stride(0),
             eps,
         )
         ctx.save_for_backward(y, norms, indices_long)
@@ -254,12 +272,18 @@ class _FusedGatherNormalizeFn(torch.autograd.Function):
         y, norms, indices = ctx.saved_tensors
         M, D = y.shape
 
-        grad_hidden = torch.zeros(ctx.total_tokens, D, dtype=ctx.dtype,
-                                   device=grad_y.device)
+        grad_hidden = torch.zeros(ctx.total_tokens, D, dtype=ctx.dtype, device=grad_y.device)
         _gather_normalize_bwd_kernel[(M,)](
-            grad_y.contiguous(), y, norms, grad_hidden, indices,
-            M, D,
-            grad_y.stride(0), y.stride(0), grad_hidden.stride(0),
+            grad_y.contiguous(),
+            y,
+            norms,
+            grad_hidden,
+            indices,
+            M,
+            D,
+            grad_y.stride(0),
+            y.stride(0),
+            grad_hidden.stride(0),
         )
         return grad_hidden, None, None, None
 
@@ -275,9 +299,14 @@ class _FusedDivNormalizeFn(torch.autograd.Function):
         norms = torch.empty(M, device=summed.device, dtype=torch.float32)
 
         _div_normalize_fwd_kernel[(M,)](
-            summed_c, lengths_f, y, norms,
-            M, D,
-            summed_c.stride(0), y.stride(0),
+            summed_c,
+            lengths_f,
+            y,
+            norms,
+            M,
+            D,
+            summed_c.stride(0),
+            y.stride(0),
             eps,
         )
         ctx.save_for_backward(y, norms, lengths_f)
@@ -291,9 +320,16 @@ class _FusedDivNormalizeFn(torch.autograd.Function):
 
         grad_x = torch.empty_like(y)
         _div_normalize_bwd_kernel[(M,)](
-            grad_y.contiguous(), y, norms, lengths, grad_x,
-            M, D,
-            grad_y.stride(0), y.stride(0), grad_x.stride(0),
+            grad_y.contiguous(),
+            y,
+            norms,
+            lengths,
+            grad_x,
+            M,
+            D,
+            grad_y.stride(0),
+            y.stride(0),
+            grad_x.stride(0),
             ctx.eps,
         )
         return grad_x, None, None
@@ -302,6 +338,7 @@ class _FusedDivNormalizeFn(torch.autograd.Function):
 # =============================================================================
 # Public API
 # =============================================================================
+
 
 def fused_pool_normalize(
     hidden_states: Tensor,
@@ -333,12 +370,11 @@ def fused_pool_normalize(
     elif strategy == "mean":
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).long()
         seq_ids = torch.repeat_interleave(
-            torch.arange(num_seqs, device=hidden_states.device), lengths,
+            torch.arange(num_seqs, device=hidden_states.device),
+            lengths,
         )
-        summed = torch.zeros(num_seqs, D, dtype=hidden_states.dtype,
-                              device=hidden_states.device)
-        summed.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden_states),
-                            hidden_states)
+        summed = torch.zeros(num_seqs, D, dtype=hidden_states.dtype, device=hidden_states.device)
+        summed.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden_states), hidden_states)
         return _FusedDivNormalizeFn.apply(summed, lengths, eps)
     else:
         raise ValueError(f"Unknown pooling strategy: {strategy}")

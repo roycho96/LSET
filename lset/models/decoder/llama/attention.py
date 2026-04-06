@@ -11,25 +11,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.decoder.qwen3.attention import (
-    apply_rotary_pos_emb,
-    _flash_or_sdpa_packed,
-)
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 from lset.models.decoder.llama.config import LlamaConfig
+from lset.models.decoder.qwen3.attention import _flash_or_sdpa_packed
+from lset.models.decoder.qwen3.attention import apply_rotary_pos_emb
 
 
 class LlamaRotaryEmbedding(nn.Module):
     """RoPE with optional Llama3 frequency scaling."""
 
-    def __init__(self, head_dim: int, max_seq_len: int, theta: float,
-                 rope_scaling: dict | None = None):
+    def __init__(self, head_dim: int, max_seq_len: int, theta: float, rope_scaling: dict | None = None):
         super().__init__()
         inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
 
         if rope_scaling is not None and rope_scaling.get("rope_type") == "llama3":
             inv_freq = self._apply_llama3_scaling(
-                inv_freq, rope_scaling,
+                inv_freq,
+                rope_scaling,
             )
 
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -164,8 +162,14 @@ class LlamaAttention(nn.Module):
         local_kv_heads = k.shape[1]
         local_kv_groups = local_q_heads // local_kv_heads
         attn_out = _flash_or_sdpa_packed(
-            q, k, v, cu_seqlens, max_seqlen,
-            local_q_heads, local_kv_heads, local_kv_groups,
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen,
+            local_q_heads,
+            local_kv_heads,
+            local_kv_groups,
             causal=False,
         )
 

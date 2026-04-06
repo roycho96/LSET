@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.registry import detect_model_type, get_model_spec
+from lset.models.registry import detect_model_type
+from lset.models.registry import get_model_spec
 from lset.tasks.pooling import pool
 
 logger = logging.getLogger(__name__)
@@ -82,12 +84,16 @@ class LSETMTEBModel:
         model = model.to(dtype=dtype, device=device)
 
         from lset.tokenization import load_tokenizer
+
         tokenizer = load_tokenizer(model_path)
 
         effective_pooling = pooling or spec.default_pooling
         logger.info(
             "Model loaded: %s, pooling=%s, normalize=%s, max_length=%d",
-            model_type, effective_pooling, normalize, max_length,
+            model_type,
+            effective_pooling,
+            normalize,
+            max_length,
         )
 
         return cls(
@@ -105,13 +111,14 @@ class LSETMTEBModel:
     # MTEB v2 EncoderProtocol
     # ------------------------------------------------------------------
 
-    def encode(self, inputs, *, task_metadata=None, hf_split=None,
-               hf_subset=None, prompt_type=None, **kwargs) -> np.ndarray:
+    def encode(
+        self, inputs, *, task_metadata=None, hf_split=None, hf_subset=None, prompt_type=None, **kwargs
+    ) -> np.ndarray:
         """MTEB v2 encode interface. `inputs` is a DataLoader of BatchedInput."""
         # Determine prompt prefix from prompt_type
         prefix = ""
         if prompt_type is not None:
-            pt_str = prompt_type.value if hasattr(prompt_type, 'value') else str(prompt_type)
+            pt_str = prompt_type.value if hasattr(prompt_type, "value") else str(prompt_type)
             prefix = self.prompt_name_to_prefix.get(pt_str, "")
 
         all_embeddings: list[torch.Tensor] = []
@@ -134,9 +141,7 @@ class LSETMTEBModel:
                 outputs = self.model(input_ids, attention_mask)
                 hidden_states = outputs["hidden_states"]
 
-            embeddings = pool(
-                hidden_states, attention_mask, self.pooling, normalize=self.normalize
-            )
+            embeddings = pool(hidden_states, attention_mask, self.pooling, normalize=self.normalize)
             all_embeddings.append(embeddings.float().cpu())
 
         return torch.cat(all_embeddings, dim=0).numpy()
@@ -147,9 +152,7 @@ class LSETMTEBModel:
             embeddings1 = torch.from_numpy(embeddings1)
         if isinstance(embeddings2, np.ndarray):
             embeddings2 = torch.from_numpy(embeddings2)
-        return F.cosine_similarity(
-            embeddings1.unsqueeze(1), embeddings2.unsqueeze(0), dim=-1
-        )
+        return F.cosine_similarity(embeddings1.unsqueeze(1), embeddings2.unsqueeze(0), dim=-1)
 
     def similarity_pairwise(self, embeddings1, embeddings2):
         """Pairwise cosine similarity between corresponding embeddings."""
@@ -164,6 +167,7 @@ class LSETMTEBModel:
         """Return ModelMeta for MTEB."""
         try:
             from mteb import ModelMeta
+
             return ModelMeta(
                 name=self._model_name,
                 revision="local",

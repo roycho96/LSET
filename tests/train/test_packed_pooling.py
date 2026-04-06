@@ -1,8 +1,9 @@
 """Tests for packed pooling — compare with padded pooling."""
 
 import torch
-from lset.tasks.pooling import pool
+
 from lset.tasks.packed_pooling import packed_pool
+from lset.tasks.pooling import pool
 
 
 def test_last_token_packed_matches_padded():
@@ -17,10 +18,12 @@ def test_last_token_packed_matches_padded():
     packed_emb = packed_pool(packed_hidden, cu_seqlens, "last_token", normalize=False)
 
     # Padded (left-pad h2 to length 3)
-    padded_hidden = torch.stack([
-        h1,
-        torch.cat([torch.zeros(1, 8), h2], dim=0),
-    ])
+    padded_hidden = torch.stack(
+        [
+            h1,
+            torch.cat([torch.zeros(1, 8), h2], dim=0),
+        ]
+    )
     mask = torch.tensor([[1, 1, 1], [0, 1, 1]])
     padded_emb = pool(padded_hidden, mask, "last_token", normalize=False)
 
@@ -38,10 +41,12 @@ def test_mean_packed_matches_padded():
     packed_emb = packed_pool(packed_hidden, cu_seqlens, "mean", normalize=False)
 
     # Padded
-    padded_hidden = torch.stack([
-        h1,
-        torch.cat([torch.zeros(1, 8), h2], dim=0),
-    ])
+    padded_hidden = torch.stack(
+        [
+            h1,
+            torch.cat([torch.zeros(1, 8), h2], dim=0),
+        ]
+    )
     mask = torch.tensor([[1, 1, 1], [0, 1, 1]])
     padded_emb = pool(padded_hidden, mask, "mean", normalize=False)
 

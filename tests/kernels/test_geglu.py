@@ -4,7 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from lset.kernels.geglu import fused_geglu, geglu
+from lset.kernels.geglu import fused_geglu
+from lset.kernels.geglu import geglu
 
 
 def _reference_geglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -60,16 +61,22 @@ class TestFusedGeGLU:
         y_fused = fused_geglu(gate, up)
         y_fused.backward(grad_out)
 
-        assert torch.allclose(gate.grad, gate_ref.grad, atol=1e-5, rtol=1e-5), \
+        assert torch.allclose(gate.grad, gate_ref.grad, atol=1e-5, rtol=1e-5), (
             f"gate grad mismatch: max diff {(gate.grad - gate_ref.grad).abs().max():.2e}"
-        assert torch.allclose(up.grad, up_ref.grad, atol=1e-5, rtol=1e-5), \
+        )
+        assert torch.allclose(up.grad, up_ref.grad, atol=1e-5, rtol=1e-5), (
             f"up grad mismatch: max diff {(up.grad - up_ref.grad).abs().max():.2e}"
+        )
 
     def test_gradcheck_fp64(self, device):
         gate = torch.randn(16, 64, device=device, dtype=torch.float64, requires_grad=True)
         up = torch.randn(16, 64, device=device, dtype=torch.float64, requires_grad=True)
         assert torch.autograd.gradcheck(
-            fused_geglu, (gate, up), eps=1e-5, atol=1e-3, fast_mode=True,
+            fused_geglu,
+            (gate, up),
+            eps=1e-5,
+            atol=1e-3,
+            fast_mode=True,
         )
 
     def test_auto_dispatch_cpu_fallback(self):

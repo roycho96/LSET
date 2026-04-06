@@ -4,9 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from lset.kernels.loss import (
-    fused_dense_loss, should_use_fused,
-)
+from lset.kernels.loss import fused_dense_loss
+from lset.kernels.loss import should_use_fused
 from lset.losses.contrastive import contrastive_loss
 from lset.losses.fused_contrastive import fused_contrastive_loss
 
@@ -64,11 +63,13 @@ class TestFusedLossNumericalMatch:
 
         # Fused: direct kernel call (force fused even though Q*K is small)
         scale = 1.0 / 0.05
-        fused_loss = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                                      pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        fused_loss = fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
 
-        assert abs(ref_loss.item() - fused_loss.item()) < 0.05, \
+        assert abs(ref_loss.item() - fused_loss.item()) < 0.05, (
             f"Loss mismatch: ref={ref_loss.item():.4f} fused={fused_loss.item():.4f}"
+        )
 
     def test_multi_loss_multi_positive(self, device):
         """MP-NCE with multiple positives per query."""
@@ -80,11 +81,13 @@ class TestFusedLossNumericalMatch:
 
         ref_loss = contrastive_loss(q, k, labels_float, temperature=0.05)
         scale = 1.0 / 0.05
-        fused_loss = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                                      pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        fused_loss = fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
 
-        assert abs(ref_loss.item() - fused_loss.item()) < 0.1, \
+        assert abs(ref_loss.item() - fused_loss.item()) < 0.1, (
             f"Loss mismatch: ref={ref_loss.item():.4f} fused={fused_loss.item():.4f}"
+        )
 
     def test_dispatch_below_threshold_uses_reference(self, device):
         """Below threshold, fused_contrastive_loss falls back to reference."""
@@ -96,8 +99,9 @@ class TestFusedLossNumericalMatch:
         pos_qi, pos_di, pos_counts = _extract_pos_info(labels.to(torch.int8))
 
         # This should use reference path since Q=8 < 1024
-        loss = fused_contrastive_loss(q, k, labels, temperature=0.05,
-                                      pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        loss = fused_contrastive_loss(
+            q, k, labels, temperature=0.05, pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
         ref = contrastive_loss(q, k, labels, temperature=0.05)
         assert torch.allclose(loss, ref, atol=1e-5)
 
@@ -114,8 +118,9 @@ class TestFusedLossGradient:
         pos_qi, pos_di, pos_counts = _extract_pos_info(labels_int8)
 
         scale = 1.0 / 0.05
-        loss = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                                pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        loss = fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
         loss.backward()
 
         assert q.grad is not None
@@ -132,8 +137,9 @@ class TestFusedLossGradient:
         pos_qi, pos_di, pos_counts = _extract_pos_info(labels_int8)
 
         scale = 1.0 / 0.05
-        loss = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                                pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        loss = fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
         loss.backward()
 
         assert q.grad is not None
@@ -156,16 +162,18 @@ class TestFusedLossMemory:
         scale = 1.0 / 0.05
 
         # Warmup: first call compiles Triton kernels + autotune
-        _ = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                             pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        _ = fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
         torch.cuda.synchronize()
 
         # Second call: measure actual memory usage
         torch.cuda.reset_peak_memory_stats()
         before = torch.cuda.max_memory_allocated()
 
-        loss = fused_dense_loss(q, k, labels_int8, scale=scale, loss_type="multi",
-                                pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts)
+        fused_dense_loss(
+            q, k, labels_int8, scale=scale, loss_type="multi", pos_qi=pos_qi, pos_di=pos_di, pos_counts=pos_counts
+        )
         torch.cuda.synchronize()
 
         after = torch.cuda.max_memory_allocated()
@@ -174,8 +182,7 @@ class TestFusedLossMemory:
         # Score matrix would be Q*K*4 = 2048*4096*4 = 32MB (fp32)
         score_matrix_mb = Q * K * 4 / 1024**2
         print(f"Memory delta: {delta_mb:.1f}MB, score matrix would be: {score_matrix_mb:.1f}MB")
-        assert delta_mb < score_matrix_mb, \
-            f"Fused used {delta_mb:.1f}MB, score matrix would be {score_matrix_mb:.1f}MB"
+        assert delta_mb < score_matrix_mb, f"Fused used {delta_mb:.1f}MB, score matrix would be {score_matrix_mb:.1f}MB"
 
 
 class TestShouldUseFused:
@@ -206,6 +213,7 @@ class TestFusedLossIntegration:
     def test_collator_emits_pos_info(self):
         """EmbeddingCollator should emit pos_qi, pos_di, pos_counts."""
         from unittest.mock import MagicMock
+
         from lset.train.data.collator import EmbeddingCollator
 
         tok = MagicMock()
@@ -228,6 +236,7 @@ class TestFusedLossIntegration:
     def test_pos_info_matches_labels(self):
         """pos_qi/pos_di should match torch.where(labels > 0)."""
         from unittest.mock import MagicMock
+
         from lset.train.data.collator import EmbeddingCollator
 
         tok = MagicMock()

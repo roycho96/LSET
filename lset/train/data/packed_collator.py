@@ -1,6 +1,7 @@
 """Packed collator for sequence packing (no padding)."""
 
 import torch
+
 from lset.train.data.packing import pack_sequences
 
 

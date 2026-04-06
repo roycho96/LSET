@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-
 # Valid MXFP8 recipes
 VALID_MX_RECIPES = ("mxfp8_emulated", "mxfp8_cublas", "mxfp8_cublas_rceil")
 

@@ -1,6 +1,7 @@
 """Checkpoint save/load using PyTorch Distributed Checkpoint (DCP)."""
 
 import os
+
 import torch
 import torch.distributed as dist
 
@@ -11,15 +12,19 @@ def save_checkpoint(model, optimizer, step: int, output_dir: str):
 
     if dist.is_initialized():
         import torch.distributed.checkpoint as dcp
+
         state = {"model": model, "optimizer": optimizer}
         dcp.save(state, checkpoint_id=checkpoint_dir)
     else:
         os.makedirs(checkpoint_dir, exist_ok=True)
-        torch.save({
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "step": step,
-        }, os.path.join(checkpoint_dir, "checkpoint.pt"))
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": step,
+            },
+            os.path.join(checkpoint_dir, "checkpoint.pt"),
+        )
 
     rank = int(os.environ.get("RANK", 0))
     if rank == 0:
@@ -32,6 +37,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir: str) -> int:
     """Load checkpoint. Returns the step number."""
     if dist.is_initialized():
         import torch.distributed.checkpoint as dcp
+
         state = {"model": model, "optimizer": optimizer}
         dcp.load(state, checkpoint_id=checkpoint_dir)
     else:

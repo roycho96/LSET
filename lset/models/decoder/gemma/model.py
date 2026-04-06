@@ -18,13 +18,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.decoder.qwen3.attention import (
-    apply_rotary_pos_emb,
-)
+from lset.kernels import geglu as _geglu
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 from lset.kernels import rms_norm as _fused_rms_norm
-from lset.kernels import geglu as _geglu
 from lset.models.decoder.gemma.config import GemmaConfig
+from lset.models.decoder.qwen3.attention import apply_rotary_pos_emb
 
 
 class GemmaRMSNorm(nn.Module):
@@ -124,9 +122,14 @@ class GemmaAttention(nn.Module):
         # Note: despite config having use_bidirectional_attention=True,
         # HF's masking utils produce causal masks for all layers.
         if attention_mask is not None and (attention_mask == 0).any():
-            causal = torch.triu(
-                torch.full((S, S), float("-inf"), dtype=q.dtype, device=q.device), diagonal=1,
-            ).unsqueeze(0).unsqueeze(0)
+            causal = (
+                torch.triu(
+                    torch.full((S, S), float("-inf"), dtype=q.dtype, device=q.device),
+                    diagonal=1,
+                )
+                .unsqueeze(0)
+                .unsqueeze(0)
+            )
             pad = torch.where(
                 attention_mask[:, None, None, :].bool(),
                 torch.tensor(0.0, dtype=q.dtype, device=q.device),
@@ -138,6 +141,7 @@ class GemmaAttention(nn.Module):
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(attn_out)
+
 
 class GemmaMLP(nn.Module):
     """Gated MLP with GELU-tanh activation (not SiLU)."""
@@ -188,7 +192,8 @@ class GemmaBlock(nn.Module):
         # Fused: (residual + hidden_states) then pre_feedforward_layernorm
         # Gemma norms use (1 + weight) instead of weight
         hidden_states, residual = _residual_rms_norm(
-            residual, hidden_states,
+            residual,
+            hidden_states,
             1.0 + self.pre_feedforward_layernorm.weight,
             self.pre_feedforward_layernorm.eps,
         )
@@ -209,26 +214,31 @@ class GemmaEmbeddingModel(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
 
         layer_types = config.layer_types or ["sliding_attention"] * config.num_hidden_layers
-        self.layers = nn.ModuleList([
-            GemmaBlock(config, is_sliding=(lt == "sliding_attention"),
-                       fused_projections=fused_projections)
-            for lt in layer_types
-        ])
+        self.layers = nn.ModuleList(
+            [
+                GemmaBlock(config, is_sliding=(lt == "sliding_attention"), fused_projections=fused_projections)
+                for lt in layer_types
+            ]
+        )
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # Two RoPE modules — global (theta=1M) and local (theta=10k)
         self.rotary_emb_global = GemmaRotaryEmbedding(
-            config.head_dim, config.max_position_embeddings, config.rope_theta,
+            config.head_dim,
+            config.max_position_embeddings,
+            config.rope_theta,
         )
         self.rotary_emb_local = GemmaRotaryEmbedding(
-            config.head_dim, config.max_position_embeddings, config.rope_local_base_freq,
+            config.head_dim,
+            config.max_position_embeddings,
+            config.rope_local_base_freq,
         )
 
         # Track which layers use local vs global RoPE
         self.layer_is_sliding = [lt == "sliding_attention" for lt in layer_types]
 
         # Gemma3 normalizes embeddings by sqrt(hidden_size)
-        self._embed_scale = config.hidden_size ** 0.5
+        self._embed_scale = config.hidden_size**0.5
 
     def forward(
         self,

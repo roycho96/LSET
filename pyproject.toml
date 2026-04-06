@@ -37,5 +37,37 @@ lset = "lset.cli:main"
 Homepage = "https://github.com/roycho96/LSET"
 Issues = "https://github.com/roycho96/LSET/issues"
 
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+respect-gitignore = true
+src = ["lset"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+]
+ignore = ["E501", "E731", "E402"]
+
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "lset/kernels/experimental",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["lset"]
+force-single-line = true
+lines-between-types = 1
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

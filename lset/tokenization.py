@@ -18,6 +18,7 @@ def load_tokenizer(model_path: str | Path) -> Tokenizer:
 @dataclass
 class EmbeddingTemplate:
     """Template for wrapping text before tokenization for embedding models."""
+
     query_prefix: str
     document_prefix: str
     query_suffix: str = ""

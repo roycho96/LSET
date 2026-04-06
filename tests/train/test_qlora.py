@@ -4,8 +4,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from lset.train.lora import LoRALinear, get_lora_params
+from lset.train.lora import LoRALinear
 from lset.train.lora import apply_qlora
+from lset.train.lora import get_lora_params
 from lset.train.quantization.nf4 import _compute_scaler_block_size
 
 
@@ -49,6 +50,7 @@ class TestScalerBlockSize:
 class TestQLoRA:
     def test_apply_qlora_creates_lora_with_nf4(self, simple_model):
         from torchao.dtypes.nf4tensor import NF4Tensor
+
         apply_qlora(simple_model, r=4, alpha=8.0)
         layer = simple_model.layers[0]
         # Should be LoRALinear wrapping NF4-quantized base
@@ -61,14 +63,14 @@ class TestQLoRA:
         # Calculate original param bytes (just target linears)
         orig_bytes = 0
         for name, p in simple_model.named_parameters():
-            if any(t in name for t in ["q_proj", "k_proj", "v_proj", "o_proj",
-                                        "gate_proj", "up_proj", "down_proj"]):
+            if any(t in name for t in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]):
                 orig_bytes += p.numel() * p.element_size()
 
         apply_qlora(simple_model, r=4, alpha=8.0)
 
         # Calculate NF4 storage (quantized_data is the main storage)
         from torchao.dtypes.nf4tensor import NF4Tensor
+
         nf4_bytes = 0
         for name, module in simple_model.named_modules():
             if isinstance(module, LoRALinear):

@@ -5,7 +5,6 @@ This module provides structure for future reranker/single-input tasks.
 """
 
 
-
 def get_pp_split_points(config, num_stages: int) -> dict:
     """Return split point FQNs for even layer distribution.
 
@@ -17,8 +16,7 @@ def get_pp_split_points(config, num_stages: int) -> dict:
         Dict mapping layer FQN to split type.
     """
     num_layers = config.num_hidden_layers
-    assert num_layers % num_stages == 0, \
-        f"Layers {num_layers} not divisible by stages {num_stages}"
+    assert num_layers % num_stages == 0, f"Layers {num_layers} not divisible by stages {num_stages}"
 
     layers_per_stage = num_layers // num_stages
     split_points = {}

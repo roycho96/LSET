@@ -13,12 +13,15 @@ Architecture:
 Public API matches loss.py's FusedDenseLoss interface.
 """
 
-import os
 import logging
+import os
+
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
+
 from torch import Tensor
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ def _load_sm100_extension():
 
         # Find Python include dirs for compilation
         import sysconfig
+
         extra_includes = []
         py_include = sysconfig.get_path("include")
         plat_include = sysconfig.get_path("platinclude")
@@ -146,16 +150,14 @@ def is_sm100_available() -> bool:
 def _neg_lse_forward_sm100(q_scaled, k, labels):
     """SM100: compute logsumexp of negative-only scores."""
     ext = _load_sm100_extension()
-    out_lse, _ = ext.fwd(q_scaled.contiguous(), k.contiguous(),
-                         labels.contiguous(), 1.0, LSE_NEG_ONLY)
+    out_lse, _ = ext.fwd(q_scaled.contiguous(), k.contiguous(), labels.contiguous(), 1.0, LSE_NEG_ONLY)
     return out_lse
 
 
 def _all_lse_forward_sm100(q_scaled, k, labels):
     """SM100: compute logsumexp of all valid scores."""
     ext = _load_sm100_extension()
-    out_lse, _ = ext.fwd(q_scaled.contiguous(), k.contiguous(),
-                         labels.contiguous(), 1.0, LSE_VALID_ALL)
+    out_lse, _ = ext.fwd(q_scaled.contiguous(), k.contiguous(), labels.contiguous(), 1.0, LSE_VALID_ALL)
     return out_lse
 
 
@@ -163,8 +165,12 @@ def _backward_sm100(q_scaled, k, labels, ref_lse, aux, w, loss_type_int):
     """SM100: compute dQ and dK gradients."""
     ext = _load_sm100_extension()
     dq, dk = ext.bwd(
-        q_scaled.contiguous(), k.contiguous(), labels.contiguous(),
-        ref_lse.contiguous(), aux.contiguous(), w.contiguous(),
+        q_scaled.contiguous(),
+        k.contiguous(),
+        labels.contiguous(),
+        ref_lse.contiguous(),
+        aux.contiguous(),
+        w.contiguous(),
         loss_type_int,
     )
     return dq, dk
@@ -293,7 +299,12 @@ class FusedDenseLossSM100(torch.autograd.Function):
         w = grad_output * inv_weight
 
         dq_scaled, dk = _backward_sm100(
-            q_scaled, k, labels, ref_lse, aux, w,
+            q_scaled,
+            k,
+            labels,
+            ref_lse,
+            aux,
+            w,
             loss_type_int=ctx.loss_type_int,
         )
 
@@ -331,11 +342,19 @@ def fused_dense_loss_sm100(
     loss_type_int = _LOSS_TYPE_MAP.get(loss_type, LOSS_MULTI)
     q_scaled = q * scale
 
-    pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values = (
-        _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts)
+    pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values = _resolve_positive_pairs(
+        q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts
     )
 
     return FusedDenseLossSM100.apply(
-        q_scaled, k, labels, loss_type_int,
-        pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values,
+        q_scaled,
+        k,
+        labels,
+        loss_type_int,
+        pos_qi,
+        pos_di,
+        num_pos,
+        has_neg,
+        pos_scores,
+        pos_label_values,
     )

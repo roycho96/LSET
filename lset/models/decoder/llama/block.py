@@ -5,11 +5,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
+from lset.kernels import residual_rms_norm as _residual_rms_norm
 from lset.models.decoder.llama.attention import LlamaAttention
 from lset.models.decoder.llama.config import LlamaConfig
 from lset.models.decoder.llama.mlp import LlamaMLP
-from lset.kernels import residual_rms_norm as _residual_rms_norm
+from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
 
 
 class LlamaBlock(nn.Module):
@@ -36,15 +36,14 @@ class LlamaBlock(nn.Module):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if packed:
-            hidden_states = self.self_attn.forward_packed(
-                hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen
-            )
+            hidden_states = self.self_attn.forward_packed(hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen)
         else:
             hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
 
         # Fused residual add + post-attention RMSNorm (pre-MLP norm)
         hidden_states, residual = _residual_rms_norm(
-            residual, hidden_states,
+            residual,
+            hidden_states,
             self.post_attention_layernorm.weight,
             self.post_attention_layernorm.eps,
         )
@@ -64,6 +63,10 @@ class LlamaBlock(nn.Module):
         max_seqlen: int,
     ) -> torch.Tensor:
         return self(
-            hidden_states, cos, sin,
-            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            hidden_states,
+            cos,
+            sin,
+            position_ids=position_ids,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )

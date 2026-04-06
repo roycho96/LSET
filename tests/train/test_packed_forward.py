@@ -1,8 +1,9 @@
 """Test packed forward matches padded forward."""
 
+from pathlib import Path
+
 import pytest
 import torch
-from pathlib import Path
 
 MODEL_PATH = "/home/roy/models/Qwen3-Embedding-0.6B"
 
@@ -26,7 +27,7 @@ def test_packed_vs_padded_real_weights():
 
     # Two sequences of different lengths
     seq1 = [42, 100, 200, 300]  # len 4
-    seq2 = [500, 600]            # len 2
+    seq2 = [500, 600]  # len 2
 
     # --- Padded path ---
     # Left-pad seq2 to length 4
@@ -69,9 +70,16 @@ def test_packed_vs_padded_small_model():
     from lset.models.decoder.qwen3.model import Qwen3Decoder
 
     device = torch.device("cuda:0")
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=100, max_position_embeddings=64)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=100,
+        max_position_embeddings=64,
+    )
     model = Qwen3Decoder(config).to(device=device, dtype=torch.float32)
     model.eval()
 

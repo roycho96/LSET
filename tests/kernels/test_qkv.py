@@ -15,21 +15,23 @@ class TestFusedQKV:
     """Verify fused QKV output matches separate Q/K/V output with same weights."""
 
     def test_qwen3_fused_matches_separate(self, device):
-        from lset.models.decoder.qwen3.config import Qwen3Config
         from lset.models.decoder.qwen3.attention import Qwen3Attention
+        from lset.models.decoder.qwen3.config import Qwen3Config
 
         config = Qwen3Config(
-            hidden_size=64, num_attention_heads=8, num_key_value_heads=4,
-            head_dim=16, vocab_size=100, max_position_embeddings=64,
+            hidden_size=64,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
         )
         sep = Qwen3Attention(config, fused_qkv=False).to(device, torch.bfloat16)
         fsd = Qwen3Attention(config, fused_qkv=True).to(device, torch.bfloat16)
 
         # Copy weights from separate to fused
         with torch.no_grad():
-            fsd.qkv_proj.weight.copy_(torch.cat([
-                sep.q_proj.weight, sep.k_proj.weight, sep.v_proj.weight
-            ], dim=0))
+            fsd.qkv_proj.weight.copy_(torch.cat([sep.q_proj.weight, sep.k_proj.weight, sep.v_proj.weight], dim=0))
             fsd.o_proj.weight.copy_(sep.o_proj.weight)
             fsd.q_norm.weight.copy_(sep.q_norm.weight)
             fsd.k_norm.weight.copy_(sep.k_norm.weight)
@@ -51,9 +53,7 @@ class TestFusedQKV:
         fsd = Qwen3MLP(config, fused_gate_up=True).to(device, torch.bfloat16)
 
         with torch.no_grad():
-            fsd.gate_up_proj.weight.copy_(torch.cat([
-                sep.gate_proj.weight, sep.up_proj.weight
-            ], dim=0))
+            fsd.gate_up_proj.weight.copy_(torch.cat([sep.gate_proj.weight, sep.up_proj.weight], dim=0))
             fsd.down_proj.weight.copy_(sep.down_proj.weight)
 
         x = torch.randn(2, 16, 64, device=device, dtype=torch.bfloat16)
@@ -100,9 +100,14 @@ class TestFusedQKV:
         from lset.models.decoder.qwen3.model import Qwen3Decoder
 
         config = Qwen3Config(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=8, num_key_value_heads=4, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
         )
         model = Qwen3Decoder(config, fused_projections=True).to(device, torch.bfloat16)
         ids = torch.randint(0, 100, (2, 16), device=device)
@@ -114,10 +119,11 @@ class TestFusedQKV:
 
     def test_qwen3_model_fused_weight_loading(self, device):
         """Load real Qwen3 weights into fused model."""
+        import os
+
         from lset.models.decoder.qwen3.config import Qwen3Config
         from lset.models.decoder.qwen3.model import Qwen3Decoder
         from lset.models.decoder.qwen3.weights import load_qwen3_weights
-        import os
 
         model_path = os.path.expanduser("~/models/Qwen3-Embedding-0.6B")
         if not os.path.exists(model_path):
@@ -140,9 +146,14 @@ class TestFusedQKV:
         from lset.models.decoder.llama.model import LlamaDecoder
 
         config = LlamaConfig(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=8, num_key_value_heads=4, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
         )
         model = LlamaDecoder(config, fused_projections=True).to(device, torch.bfloat16)
         ids = torch.randint(0, 100, (2, 16), device=device)
@@ -158,9 +169,14 @@ class TestFusedQKV:
         from lset.models.decoder.gemma.model import GemmaEmbeddingModel
 
         config = GemmaConfig(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
             query_pre_attn_scalar=16.0,
         )
         model = GemmaEmbeddingModel(config, fused_projections=True).to(device, torch.bfloat16)
@@ -177,9 +193,14 @@ class TestFusedQKV:
         from lset.models.decoder.qwen3.model import Qwen3Decoder
 
         config = Qwen3Config(
-            num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-            num_attention_heads=8, num_key_value_heads=4, head_dim=16,
-            vocab_size=100, max_position_embeddings=64,
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
         )
         model = Qwen3Decoder(config, fused_projections=True).to(device, torch.bfloat16)
         ids = torch.randint(0, 100, (2, 16), device=device)

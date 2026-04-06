@@ -1,6 +1,7 @@
 """Tests for length-sorted batching in EmbeddingCollator."""
 
 from unittest.mock import MagicMock
+
 from lset.train.data.collator import EmbeddingCollator
 
 
@@ -19,10 +20,7 @@ def _mock_tokenizer():
 
 def _make_batch(lengths):
     """Create batch samples with queries of given lengths."""
-    return [
-        {"query": "x" * l, "positives": ["pos"], "negatives": []}
-        for l in lengths
-    ]
+    return [{"query": "x" * length, "positives": ["pos"], "negatives": []} for length in lengths]
 
 
 def test_length_sorted_orders_by_query_length():
@@ -34,7 +32,7 @@ def test_length_sorted_orders_by_query_length():
 
     # With length_sorted, longest queries should come first in the output
     # Query lengths should be monotonically non-increasing
-    q_ids = result["query"]["input_ids"]
+    result["query"]["input_ids"]
     q_mask = result["query"]["attention_mask"]
     lengths = q_mask.sum(dim=1).tolist()
     assert lengths == sorted(lengths, reverse=True), f"Not sorted: {lengths}"

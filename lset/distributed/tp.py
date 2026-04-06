@@ -1,8 +1,9 @@
 """Tensor Parallelism application for LSET models."""
 
+import torch.nn as nn
+
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor.parallel import parallelize_module
-import torch.nn as nn
 
 
 def apply_tp(model: nn.Module, tp_mesh: DeviceMesh, tp_plan: dict):

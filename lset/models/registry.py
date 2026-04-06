@@ -30,14 +30,14 @@ def register_alias(alias: str, target: str) -> None:
 def get_model_spec(name: str) -> ModelSpec:
     resolved = _ALIASES.get(name, name)
     if resolved not in _REGISTRY:
-        raise KeyError(f"Unknown model: {name!r} (resolved to {resolved!r}). "
-                       f"Available: {list(_REGISTRY.keys())}")
+        raise KeyError(f"Unknown model: {name!r} (resolved to {resolved!r}). Available: {list(_REGISTRY.keys())}")
     return _REGISTRY[resolved]
 
 
 def detect_model_type(model_path: str) -> str:
     """Auto-detect model type from config.json."""
     import json
+
     with open(f"{model_path}/config.json") as f:
         config = json.load(f)
 

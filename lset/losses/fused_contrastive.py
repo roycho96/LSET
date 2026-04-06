@@ -6,9 +6,11 @@ otherwise.
 """
 
 import torch
+
 from torch import Tensor
 
-from lset.kernels.loss import fused_dense_loss, should_use_fused
+from lset.kernels.loss import fused_dense_loss
+from lset.kernels.loss import should_use_fused
 from lset.losses.contrastive import contrastive_loss
 
 # Lazy SM100 detection
@@ -68,7 +70,9 @@ def fused_contrastive_loss(
         # To test manually: lset.kernels.experimental.loss_sm100.fused_dense_loss_sm100()
 
         return fused_dense_loss(
-            query_embeds, doc_embeds, labels_int8,
+            query_embeds,
+            doc_embeds,
+            labels_int8,
             scale=scale,
             loss_type=loss_type,
             pos_qi=pos_qi,

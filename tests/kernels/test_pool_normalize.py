@@ -36,7 +36,8 @@ def _reference_pool_normalize(hidden, cu_seqlens, strategy, eps=1e-12):
     elif strategy == "mean":
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).long()
         seq_ids = torch.repeat_interleave(
-            torch.arange(num_seqs, device=hidden.device), lengths,
+            torch.arange(num_seqs, device=hidden.device),
+            lengths,
         )
         emb = torch.zeros(num_seqs, D, dtype=hidden.dtype, device=hidden.device)
         emb.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden), hidden)
@@ -45,10 +46,10 @@ def _reference_pool_normalize(hidden, cu_seqlens, strategy, eps=1e-12):
 
 
 class TestFusedPoolNormalize:
-
     @pytest.mark.parametrize("strategy", ["last_token", "cls", "mean"])
     def test_numerical_match_bf16(self, device, strategy):
         from lset.kernels.pool_normalize import fused_pool_normalize
+
         hidden, cu_seqlens, _ = _make_packed_data(device=device)
 
         out_fused = fused_pool_normalize(hidden, cu_seqlens, strategy)
@@ -59,6 +60,7 @@ class TestFusedPoolNormalize:
     @pytest.mark.parametrize("strategy", ["last_token", "cls", "mean"])
     def test_output_is_unit_norm(self, device, strategy):
         from lset.kernels.pool_normalize import fused_pool_normalize
+
         hidden, cu_seqlens, _ = _make_packed_data(device=device, dtype=torch.float32)
 
         out = fused_pool_normalize(hidden, cu_seqlens, strategy)
@@ -68,6 +70,7 @@ class TestFusedPoolNormalize:
     @pytest.mark.parametrize("strategy", ["last_token", "cls"])
     def test_backward_gather_normalize(self, device, strategy):
         from lset.kernels.pool_normalize import fused_pool_normalize
+
         hidden, cu_seqlens, _ = _make_packed_data(device=device, dtype=torch.float32)
         hidden.requires_grad_(True)
 
@@ -78,6 +81,7 @@ class TestFusedPoolNormalize:
 
     def test_backward_mean(self, device):
         from lset.kernels.pool_normalize import fused_pool_normalize
+
         hidden, cu_seqlens, _ = _make_packed_data(device=device, dtype=torch.float32)
         hidden.requires_grad_(True)
 
@@ -88,6 +92,7 @@ class TestFusedPoolNormalize:
     def test_packed_pool_integration(self, device):
         """packed_pool uses fused path on CUDA."""
         from lset.tasks.packed_pooling import packed_pool
+
         hidden, cu_seqlens, _ = _make_packed_data(device=device)
 
         emb = packed_pool(hidden, cu_seqlens, "last_token", normalize=True)
@@ -97,6 +102,7 @@ class TestFusedPoolNormalize:
 
     def test_single_sequence(self, device):
         from lset.kernels.pool_normalize import fused_pool_normalize
+
         T, D = 16, 128
         hidden = torch.randn(T, D, device=device, dtype=torch.bfloat16)
         cu_seqlens = torch.tensor([0, T], dtype=torch.int32, device=device)

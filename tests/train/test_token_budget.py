@@ -1,14 +1,15 @@
 """Tests for token-budget chunk planning in GradCache."""
 
 import torch
-from lset.tasks.grad_cache import _plan_chunks_token_budget, GradCacheWrapper
-from lset.tasks.bi_encoder import BiEncoderTask
+
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
+from lset.tasks.bi_encoder import BiEncoderTask
+from lset.tasks.grad_cache import GradCacheWrapper
+from lset.tasks.grad_cache import _plan_chunks_token_budget
 
 
 class TestPlanChunksTokenBudget:
-
     def test_uniform_lengths(self):
         lengths = [100] * 10
         chunks = _plan_chunks_token_budget(lengths, budget=300)
@@ -45,12 +46,12 @@ class TestPlanChunksTokenBudget:
         lengths = [64, 128, 32, 256, 64, 128, 64, 32]
         chunks = _plan_chunks_token_budget(lengths, budget=256)
         for b, e in chunks:
-            chunk_tokens = sum(lengths[b:e])
+            sum(lengths[b:e])
             # Each chunk should be close to budget (may exceed by one seq)
             # but never by more than the largest sequence in the chunk
             if e - b > 1:
                 # Without the last seq, should be under budget
-                without_last = sum(lengths[b:e-1])
+                without_last = sum(lengths[b : e - 1])
                 assert without_last <= 256
 
     def test_empty_input(self):
@@ -59,14 +60,12 @@ class TestPlanChunksTokenBudget:
 
 
 class TestGradCacheTokenBudget:
-
     def _make_packed_data(self, num_seqs=6, min_len=4, max_len=8, H=64):
         lengths = [torch.randint(min_len, max_len + 1, (1,)).item() for _ in range(num_seqs)]
         total = sum(lengths)
         input_ids = torch.randint(0, 100, (total,))
-        position_ids = torch.cat([torch.arange(l) for l in lengths])
-        cu_seqlens = torch.tensor([0] + list(torch.cumsum(torch.tensor(lengths), 0)),
-                                  dtype=torch.int32)
+        position_ids = torch.cat([torch.arange(length) for length in lengths])
+        cu_seqlens = torch.tensor([0] + list(torch.cumsum(torch.tensor(lengths), 0)), dtype=torch.int32)
         return {
             "input_ids": input_ids,
             "position_ids": position_ids,
@@ -77,9 +76,16 @@ class TestGradCacheTokenBudget:
     def test_token_budget_loss_matches_fixed_chunks(self):
         """Token-budget GradCache produces same loss as fixed-chunk."""
         torch.manual_seed(42)
-        config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                             num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                             vocab_size=100, max_position_embeddings=64)
+        config = Qwen3Config(
+            num_hidden_layers=2,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=100,
+            max_position_embeddings=64,
+        )
 
         task = BiEncoderTask(pooling="last_token", temperature=0.05)
 

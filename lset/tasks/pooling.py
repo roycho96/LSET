@@ -5,8 +5,9 @@ import torch
 from lset.kernels.normalize import normalize as _normalize
 
 
-def pool(hidden_states: torch.Tensor, attention_mask: torch.Tensor,
-         strategy: str, normalize: bool = True) -> torch.Tensor:
+def pool(
+    hidden_states: torch.Tensor, attention_mask: torch.Tensor, strategy: str, normalize: bool = True
+) -> torch.Tensor:
     """Pool hidden states into a single embedding vector per sequence.
 
     Args:

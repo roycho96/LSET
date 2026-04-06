@@ -3,10 +3,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from lset.models.decoder.qwen3.attention import Qwen3Attention, Qwen3RMSNorm
+from lset.kernels import residual_rms_norm as _residual_rms_norm
+from lset.models.decoder.qwen3.attention import Qwen3Attention
+from lset.models.decoder.qwen3.attention import Qwen3RMSNorm
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.mlp import Qwen3MLP
-from lset.kernels import residual_rms_norm as _residual_rms_norm
 
 
 class Qwen3Block(nn.Module):
@@ -35,15 +36,14 @@ class Qwen3Block(nn.Module):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if packed:
-            hidden_states = self.self_attn.forward_packed(
-                hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen
-            )
+            hidden_states = self.self_attn.forward_packed(hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen)
         else:
             hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
 
         # Fused residual add + post-attention RMSNorm (pre-MLP norm)
         hidden_states, residual = _residual_rms_norm(
-            residual, hidden_states,
+            residual,
+            hidden_states,
             self.post_attention_layernorm.weight,
             self.post_attention_layernorm.eps,
         )
@@ -65,6 +65,10 @@ class Qwen3Block(nn.Module):
     ) -> torch.Tensor:
         """Convenience method — routes through forward() for FSDP2 compatibility."""
         return self(
-            hidden_states, cos, sin,
-            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            hidden_states,
+            cos,
+            sin,
+            position_ids=position_ids,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )

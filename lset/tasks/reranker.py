@@ -10,8 +10,9 @@ class RerankerTask(nn.Module):
         super().__init__()
         self.target_ids = [no_token_id, yes_token_id]  # idx 0=no, 1=yes
 
-    def forward(self, model: nn.Module, input_ids: torch.Tensor,
-                attention_mask: torch.Tensor, labels: torch.Tensor) -> dict:
+    def forward(
+        self, model: nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor, labels: torch.Tensor
+    ) -> dict:
         out = model(input_ids, attention_mask, return_lm_logits=True)
         yn_logits = out["lm_logits"][:, -1, :][:, self.target_ids]  # [B, 2]
         loss = F.cross_entropy(yn_logits, labels.long())

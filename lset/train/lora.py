@@ -11,16 +11,21 @@ References:
 from __future__ import annotations
 
 import math
+
 from collections import OrderedDict
 
 import torch
 import torch.nn as nn
 
-
 # Default LoRA targets for Qwen3 (all linear projections in attn + MLP)
 QWEN3_LORA_TARGETS = (
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
 )
 
 
@@ -54,10 +59,12 @@ class LoRALinear(nn.Module):
         self.scale = alpha / r
 
         # LoRA adapters
-        self.lora_A = nn.Linear(in_features, r, bias=False, dtype=base_linear.weight.dtype,
-                                device=base_linear.weight.device)
-        self.lora_B = nn.Linear(r, out_features, bias=False, dtype=base_linear.weight.dtype,
-                                device=base_linear.weight.device)
+        self.lora_A = nn.Linear(
+            in_features, r, bias=False, dtype=base_linear.weight.dtype, device=base_linear.weight.device
+        )
+        self.lora_B = nn.Linear(
+            r, out_features, bias=False, dtype=base_linear.weight.dtype, device=base_linear.weight.device
+        )
 
         # Init: A = kaiming uniform, B = zeros (so LoRA starts as identity)
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))

@@ -1,6 +1,7 @@
 """Tests for sequence packing utilities."""
 
 import torch
+
 from lset.train.data.packing import pack_sequences
 
 

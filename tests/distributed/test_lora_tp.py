@@ -10,9 +10,11 @@ import pytest
 import torch
 import torch.distributed as dist
 
+from lset.distributed.parallel import ParallelConfig
+from lset.distributed.parallel import build_parallel_model
 from lset.models import get_model_spec
-from lset.train.lora import apply_lora, get_lora_params
-from lset.distributed.parallel import build_parallel_model, ParallelConfig
+from lset.train.lora import apply_lora
+from lset.train.lora import get_lora_params
 
 
 def _is_distributed():
@@ -69,7 +71,7 @@ def test_lora_tp_training():
     model, mesh = build_parallel_model(model, config, pconfig)
 
     losses = _train_steps(model)
-    assert all(not torch.isnan(torch.tensor(l)) for l in losses), "NaN in losses"
+    assert all(not torch.isnan(torch.tensor(v)) for v in losses), "NaN in losses"
     if rank == 0:
         print(f"LoRA+TP losses: {losses[0]:.2f} → {losses[-1]:.2f}")
 

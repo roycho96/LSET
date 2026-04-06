@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
@@ -26,9 +27,16 @@ def _make_packed_batches(B=4, device="cpu"):
 def test_packed_grad_cache_combined():
     """GradCache with packed input runs and produces gradients."""
     torch.manual_seed(42)
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=100, max_position_embeddings=64)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=100,
+        max_position_embeddings=64,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     task = BiEncoderTask(pooling="last_token", temperature=0.05)
     gc = GradCacheWrapper(task, chunk_size=2)
@@ -45,9 +53,16 @@ def test_packed_grad_cache_combined():
 def test_packed_training_steps():
     """10 training steps with packed mode, loss changes."""
     torch.manual_seed(7)
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=100, max_position_embeddings=64)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=100,
+        max_position_embeddings=64,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     task = BiEncoderTask(pooling="last_token", temperature=0.05)
     gc = GradCacheWrapper(task, chunk_size=2)
@@ -63,17 +78,24 @@ def test_packed_training_steps():
         optimizer.step()
         losses.append(loss.item())
 
-    print(f"Losses: {[f'{l:.4f}' for l in losses]}")
+    print(f"Losses: {[f'{v:.4f}' for v in losses]}")
     # Just verify it ran without error and loss is finite
-    assert all(torch.isfinite(torch.tensor(l)) for l in losses)
+    assert all(torch.isfinite(torch.tensor(v)) for v in losses)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_packed_standard_forward():
     """Standard (non-GradCache) packed forward+backward works."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=100, max_position_embeddings=64)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=100,
+        max_position_embeddings=64,
+    )
     model = Qwen3Decoder(config).to(device="cuda", dtype=torch.float32)
     task = BiEncoderTask(pooling="last_token", temperature=0.05)
 

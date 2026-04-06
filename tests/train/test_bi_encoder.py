@@ -1,6 +1,7 @@
 """Test BiEncoderTask forward pass."""
 
 import torch
+
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
@@ -8,9 +9,16 @@ from lset.tasks.bi_encoder import BiEncoderTask
 
 def test_bi_encoder_forward():
     """BiEncoderTask produces a scalar loss."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=1000, max_position_embeddings=256)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=1000,
+        max_position_embeddings=256,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     task = BiEncoderTask(pooling="last_token", temperature=0.05)
 
@@ -36,9 +44,16 @@ def test_bi_encoder_forward():
 
 def test_bi_encoder_backward():
     """Loss backpropagates to model parameters."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=1000, max_position_embeddings=256)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=1000,
+        max_position_embeddings=256,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     task = BiEncoderTask(pooling="last_token", temperature=0.05)
 

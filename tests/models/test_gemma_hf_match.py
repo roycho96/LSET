@@ -10,7 +10,9 @@ def test_gemma_hf_match():
     model_path = "/home/roy/models/embeddinggemma-300m"
 
     # --- HF model ---
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoModel
+    from transformers import AutoTokenizer
+
     hf_model = AutoModel.from_pretrained(model_path, trust_remote_code=True).cuda().eval()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
@@ -23,6 +25,7 @@ def test_gemma_hf_match():
 
     # --- LSET model ---
     from lset.models import get_model_spec
+
     spec = get_model_spec("embeddinggemma")
     config = spec.config_cls.from_hf_json(f"{model_path}/config.json")
     lset_model = spec.model_cls(config)

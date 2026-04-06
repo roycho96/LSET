@@ -31,8 +31,11 @@ def test_xlm_roberta_config():
 
 def test_forward_shape():
     config = BertConfig(
-        vocab_size=1000, hidden_size=64, intermediate_size=128,
-        num_hidden_layers=2, num_attention_heads=4,
+        vocab_size=1000,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
         max_position_embeddings=64,
     )
     model = BertEncoder(config)
@@ -45,8 +48,11 @@ def test_forward_shape():
 def test_bidirectional_attention():
     """BERT uses full bidirectional attention — each token sees all others."""
     config = BertConfig(
-        vocab_size=1000, hidden_size=64, intermediate_size=128,
-        num_hidden_layers=1, num_attention_heads=4,
+        vocab_size=1000,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=4,
         max_position_embeddings=64,
     )
     model = BertEncoder(config)
@@ -59,8 +65,11 @@ def test_bidirectional_attention():
 def test_padding_mask():
     """Verify padding tokens don't affect non-padding outputs."""
     config = BertConfig(
-        vocab_size=1000, hidden_size=64, intermediate_size=128,
-        num_hidden_layers=1, num_attention_heads=4,
+        vocab_size=1000,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=4,
         max_position_embeddings=64,
     )
     model = BertEncoder(config)

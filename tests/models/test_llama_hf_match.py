@@ -10,7 +10,9 @@ def test_hf_match():
     model_path = "/home/roy/models/llama-nemotron-embed-1b-v2"
 
     # --- HF model ---
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoModel
+    from transformers import AutoTokenizer
+
     hf_model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16)
     hf_model = hf_model.cuda().eval()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -24,6 +26,7 @@ def test_hf_match():
 
     # --- LSET model ---
     from lset.models import get_model_spec
+
     spec = get_model_spec("llama")
     config = spec.config_cls.from_hf_json(f"{model_path}/config.json")
     lset_model = spec.model_cls(config)

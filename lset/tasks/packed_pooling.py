@@ -7,8 +7,9 @@ from lset.kernels.pool_normalize import fused_pool_normalize as _fused_pool_norm
 from lset.kernels.segment_pool import triton_segment_mean_pool as _triton_segment_mean
 
 
-def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
-                strategy: str, normalize: bool = True) -> torch.Tensor:
+def packed_pool(
+    hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, strategy: str, normalize: bool = True
+) -> torch.Tensor:
     """Pool packed hidden states into per-sequence embeddings.
 
     Args:
@@ -22,8 +23,8 @@ def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
     """
     # Fused path: pool + normalize in one shot when on CUDA
     import os
-    if (os.environ.get("LSET_DISABLE_FUSED_POOL_NORMALIZE") != "1"
-            and hidden_states.is_cuda):
+
+    if os.environ.get("LSET_DISABLE_FUSED_POOL_NORMALIZE") != "1" and hidden_states.is_cuda:
         if strategy == "mean":
             # Triton segment kernel: mean + optional normalize in one kernel
             return _triton_segment_mean(hidden_states, cu_seqlens, normalize)
@@ -42,12 +43,11 @@ def packed_pool(hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
         H = hidden_states.shape[-1]
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).long()
         seq_ids = torch.repeat_interleave(
-            torch.arange(num_seqs, device=hidden_states.device), lengths,
+            torch.arange(num_seqs, device=hidden_states.device),
+            lengths,
         )
-        emb = torch.zeros(num_seqs, H, dtype=hidden_states.dtype,
-                          device=hidden_states.device)
-        emb.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden_states),
-                         hidden_states)
+        emb = torch.zeros(num_seqs, H, dtype=hidden_states.dtype, device=hidden_states.device)
+        emb.scatter_add_(0, seq_ids.unsqueeze(-1).expand_as(hidden_states), hidden_states)
         emb = emb / lengths.unsqueeze(-1).to(emb.dtype).clamp(min=1e-9)
     else:
         raise ValueError(f"Unknown packed pooling strategy: {strategy}")

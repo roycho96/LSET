@@ -5,18 +5,20 @@ from __future__ import annotations
 import os
 import sys
 
-from lset.config import LSETConfig, parse_overrides
+from lset.config import LSETConfig
+from lset.config import parse_overrides
 
 
 def train(config: LSETConfig):
     """Run training with the given config."""
-    import torch
     from pathlib import Path
 
+    import torch
+
+    from lset.models.registry import detect_model_type
     from lset.tokenization import load_tokenizer
     from lset.train.data.dataset import EmbeddingDataset
     from lset.train.engine import TrainingEngine
-    from lset.models.registry import detect_model_type
 
     model_path = str(Path(config.model.path).expanduser())
     model_name = detect_model_type(model_path)
@@ -36,6 +38,7 @@ def train(config: LSETConfig):
 
     # Set attention backend
     from lset.models.decoder.qwen3.attention import set_attn_backend
+
     set_attn_backend(config.attention.backend)
 
     # Seed
@@ -104,6 +107,7 @@ def train(config: LSETConfig):
     # Compile
     if config.compile.enabled:
         import torch
+
         engine.model = torch.compile(
             engine.model,
             dynamic=config.compile.dynamic,
@@ -114,6 +118,7 @@ def train(config: LSETConfig):
 
     # Save final config for reproducibility
     from pathlib import Path
+
     out_dir = Path(config.checkpoint.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     config.to_yaml(out_dir / "config.yaml")

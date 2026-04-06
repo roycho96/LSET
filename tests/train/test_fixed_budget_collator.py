@@ -1,12 +1,12 @@
 """Tests for FixedBudgetPackedCollator."""
 
-
-from lset.train.data.packed_collator import FixedBudgetPackedCollator, _pack_fixed_budget
-
+from lset.train.data.packed_collator import FixedBudgetPackedCollator
+from lset.train.data.packed_collator import _pack_fixed_budget
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_sample(query_ids: list[int], positive_ids: list[int], negative_ids=None):
     """Create a sample dict matching the PackedCollator expected input."""
@@ -22,6 +22,7 @@ def _make_sample(query_ids: list[int], positive_ids: list[int], negative_ids=Non
 # ---------------------------------------------------------------------------
 # Tests for _pack_fixed_budget (low-level)
 # ---------------------------------------------------------------------------
+
 
 class TestPackFixedBudget:
     def test_output_shape_exact_fit(self):
@@ -91,9 +92,9 @@ class TestPackFixedBudget:
         cu = result["cu_seqlens"].tolist()
         ids = result["input_ids"].tolist()
         assert cu == [0, 1, 3, 6]
-        assert ids[cu[0]:cu[1]] == [1]
-        assert ids[cu[1]:cu[2]] == [2, 3]
-        assert ids[cu[2]:cu[3]] == [4, 5, 6]
+        assert ids[cu[0] : cu[1]] == [1]
+        assert ids[cu[1] : cu[2]] == [2, 3]
+        assert ids[cu[2] : cu[3]] == [4, 5, 6]
 
     def test_position_ids_reset_per_sequence(self):
         """Position IDs reset to 0 at each sequence boundary."""
@@ -120,6 +121,7 @@ class TestPackFixedBudget:
 # ---------------------------------------------------------------------------
 # Tests for FixedBudgetPackedCollator (high-level)
 # ---------------------------------------------------------------------------
+
 
 class TestFixedBudgetPackedCollator:
     def test_basic_output_shapes(self):

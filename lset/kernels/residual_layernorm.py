@@ -18,12 +18,13 @@ Weight and bias applied OUTSIDE the custom Function.
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Forward Kernel
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -36,14 +37,18 @@ from torch import Tensor
 )
 @triton.jit
 def _residual_layer_norm_fwd_kernel(
-    RESIDUAL,       # [N, D] residual input
-    ATTN_OUT,       # [N, D] attention/MLP output
-    Y,              # [N, D] normalized output (x_hat, WITHOUT weight/bias)
-    NEW_RESIDUAL,   # [N, D] residual + attn_out
-    MEAN,           # [N] row means for backward
-    RSTD,           # [N] reciprocal std for backward
-    N, D,
-    stride_r, stride_a, stride_y, stride_nr,
+    RESIDUAL,  # [N, D] residual input
+    ATTN_OUT,  # [N, D] attention/MLP output
+    Y,  # [N, D] normalized output (x_hat, WITHOUT weight/bias)
+    NEW_RESIDUAL,  # [N, D] residual + attn_out
+    MEAN,  # [N] row means for backward
+    RSTD,  # [N] reciprocal std for backward
+    N,
+    D,
+    stride_r,
+    stride_a,
+    stride_y,
+    stride_nr,
     eps,
     BLOCK_D: tl.constexpr,
     USE_FP64: tl.constexpr = False,
@@ -96,6 +101,7 @@ def _residual_layer_norm_fwd_kernel(
 # Backward Kernel
 # =============================================================================
 
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
@@ -107,13 +113,16 @@ def _residual_layer_norm_fwd_kernel(
 )
 @triton.jit
 def _residual_layer_norm_bwd_kernel(
-    GRAD_Y,         # [N, D] upstream gradient (includes weight effect)
-    NEW_RESIDUAL,   # [N, D] saved from forward
-    MEAN,           # [N] row means from forward
-    RSTD,           # [N] reciprocal std from forward
-    GRAD_INPUT,     # [N, D] gradient for BOTH residual and attn_out
-    N, D,
-    stride_gy, stride_nr, stride_gi,
+    GRAD_Y,  # [N, D] upstream gradient (includes weight effect)
+    NEW_RESIDUAL,  # [N, D] saved from forward
+    MEAN,  # [N] row means from forward
+    RSTD,  # [N] reciprocal std from forward
+    GRAD_INPUT,  # [N, D] gradient for BOTH residual and attn_out
+    N,
+    D,
+    stride_gy,
+    stride_nr,
+    stride_gi,
     BLOCK_D: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
@@ -160,6 +169,7 @@ def _residual_layer_norm_bwd_kernel(
 # Python Wrappers
 # =============================================================================
 
+
 def _residual_layer_norm_forward(residual: Tensor, attn_out: Tensor, eps: float):
     orig_shape = residual.shape
     D = orig_shape[-1]
@@ -175,10 +185,18 @@ def _residual_layer_norm_forward(residual: Tensor, attn_out: Tensor, eps: float)
 
     use_fp64 = residual.dtype == torch.float64
     _residual_layer_norm_fwd_kernel[(N,)](
-        residual_2d, attn_out_2d, y, new_residual, mean, rstd,
-        N, D,
-        residual_2d.stride(0), attn_out_2d.stride(0),
-        y.stride(0), new_residual.stride(0),
+        residual_2d,
+        attn_out_2d,
+        y,
+        new_residual,
+        mean,
+        rstd,
+        N,
+        D,
+        residual_2d.stride(0),
+        attn_out_2d.stride(0),
+        y.stride(0),
+        new_residual.stride(0),
         eps,
         USE_FP64=use_fp64,
     )
@@ -186,7 +204,10 @@ def _residual_layer_norm_forward(residual: Tensor, attn_out: Tensor, eps: float)
 
 
 def _residual_layer_norm_backward(
-    grad_y: Tensor, new_residual: Tensor, mean: Tensor, rstd: Tensor,
+    grad_y: Tensor,
+    new_residual: Tensor,
+    mean: Tensor,
+    rstd: Tensor,
 ):
     orig_shape = grad_y.shape
     D = orig_shape[-1]
@@ -197,9 +218,16 @@ def _residual_layer_norm_backward(
     grad_input = torch.empty_like(nr_2d)
     use_fp64 = grad_y.dtype == torch.float64
     _residual_layer_norm_bwd_kernel[(N,)](
-        grad_y_2d, nr_2d, mean, rstd, grad_input,
-        N, D,
-        grad_y_2d.stride(0), nr_2d.stride(0), grad_input.stride(0),
+        grad_y_2d,
+        nr_2d,
+        mean,
+        rstd,
+        grad_input,
+        N,
+        D,
+        grad_y_2d.stride(0),
+        nr_2d.stride(0),
+        grad_input.stride(0),
         USE_FP64=use_fp64,
     )
     return grad_input.reshape(orig_shape)
@@ -208,6 +236,7 @@ def _residual_layer_norm_backward(
 # =============================================================================
 # Autograd Function
 # =============================================================================
+
 
 class _FusedResidualLayerNormFn(torch.autograd.Function):
     """Fused residual-add + LayerNorm.
@@ -219,7 +248,9 @@ class _FusedResidualLayerNormFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, residual: Tensor, attn_out: Tensor, eps: float):
         y, new_residual, mean, rstd = _residual_layer_norm_forward(
-            residual, attn_out, eps,
+            residual,
+            attn_out,
+            eps,
         )
         ctx.save_for_backward(new_residual, mean, rstd)
         return y, new_residual
@@ -242,8 +273,11 @@ _FUSED_THRESHOLD = 256
 
 
 def fused_residual_layer_norm(
-    residual: Tensor, attn_out: Tensor,
-    weight: Tensor, bias: Tensor, eps: float = 1e-5,
+    residual: Tensor,
+    attn_out: Tensor,
+    weight: Tensor,
+    bias: Tensor,
+    eps: float = 1e-5,
 ) -> tuple[Tensor, Tensor]:
     """Fused residual-add + LayerNorm — force fused path.
 
@@ -257,18 +291,28 @@ def fused_residual_layer_norm(
 
 
 def residual_layer_norm(
-    residual: Tensor, attn_out: Tensor,
-    weight: Tensor, bias: Tensor, eps: float = 1e-5,
+    residual: Tensor,
+    attn_out: Tensor,
+    weight: Tensor,
+    bias: Tensor,
+    eps: float = 1e-5,
 ) -> tuple[Tensor, Tensor]:
     """Residual-add + LayerNorm with automatic Triton dispatch."""
     import os
-    if (os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
-            and residual.is_cuda
-            and residual.numel() // residual.shape[-1] >= _FUSED_THRESHOLD):
+
+    if (
+        os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
+        and residual.is_cuda
+        and residual.numel() // residual.shape[-1] >= _FUSED_THRESHOLD
+    ):
         return fused_residual_layer_norm(residual, attn_out, weight, bias, eps)
     # Fallback: standard PyTorch
     new_residual = residual + attn_out
     normed = torch.nn.functional.layer_norm(
-        new_residual, weight.shape, weight, bias, eps,
+        new_residual,
+        weight.shape,
+        weight,
+        bias,
+        eps,
     )
     return normed, new_residual

@@ -4,9 +4,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from lset.kernels.normalize import (
-    fused_l2_normalize, normalize, _FUSED_NORM_THRESHOLD,
-)
+from lset.kernels.normalize import _FUSED_NORM_THRESHOLD
+from lset.kernels.normalize import fused_l2_normalize
+from lset.kernels.normalize import normalize
 
 
 @pytest.fixture
@@ -85,7 +85,10 @@ class TestFusedL2Normalize:
         x = torch.randn(4, 32, device=device, dtype=torch.float64, requires_grad=True)
         assert torch.autograd.gradcheck(
             lambda x: fused_l2_normalize(x, eps=1e-12),
-            (x,), eps=1e-5, atol=1e-3, fast_mode=True,
+            (x,),
+            eps=1e-5,
+            atol=1e-3,
+            fast_mode=True,
         )
 
     def test_backward_matches_pytorch(self, device):

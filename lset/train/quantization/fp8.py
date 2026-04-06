@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-
 # Valid recipe names
 VALID_RECIPES = ("tensorwise", "rowwise", "rowwise_with_gw_hp")
 
@@ -49,11 +48,13 @@ def apply_fp8_training(
     if enable_fsdp_float8_all_gather and recipe == "tensorwise":
         # Override to enable FP8 all-gather for tensorwise recipe
         from dataclasses import replace
+
         config = replace(config, enable_fsdp_float8_all_gather=True)
 
     # For rowwise recipe, enable precision cast emulation (pytorch#150859)
     if recipe in ("rowwise", "rowwise_with_gw_hp"):
         import torch._inductor.config
+
         torch._inductor.config.emulate_precision_casts = True
 
     # Filter: skip modules with dims not divisible by 16
@@ -81,21 +82,21 @@ def get_fp8_tp_plan(config, use_fp8: bool = False, recipe: str = "rowwise"):
         return get_tp_plan(config)
 
     # Tensorwise FP8 uses Float8ColwiseParallel/Float8RowwiseParallel
-    from torchao.float8.float8_tensor_parallel import (
-        Float8ColwiseParallel,
-        Float8RowwiseParallel,
-    )
+    from torchao.float8.float8_tensor_parallel import Float8ColwiseParallel
+    from torchao.float8.float8_tensor_parallel import Float8RowwiseParallel
 
     plan = {}
     for i in range(config.num_hidden_layers):
         p = f"layers.{i}"
-        plan.update({
-            f"{p}.self_attn.q_proj": Float8ColwiseParallel(),
-            f"{p}.self_attn.k_proj": Float8ColwiseParallel(),
-            f"{p}.self_attn.v_proj": Float8ColwiseParallel(),
-            f"{p}.self_attn.o_proj": Float8RowwiseParallel(),
-            f"{p}.mlp.gate_proj": Float8ColwiseParallel(),
-            f"{p}.mlp.up_proj": Float8ColwiseParallel(),
-            f"{p}.mlp.down_proj": Float8RowwiseParallel(),
-        })
+        plan.update(
+            {
+                f"{p}.self_attn.q_proj": Float8ColwiseParallel(),
+                f"{p}.self_attn.k_proj": Float8ColwiseParallel(),
+                f"{p}.self_attn.v_proj": Float8ColwiseParallel(),
+                f"{p}.self_attn.o_proj": Float8RowwiseParallel(),
+                f"{p}.mlp.gate_proj": Float8ColwiseParallel(),
+                f"{p}.mlp.up_proj": Float8ColwiseParallel(),
+                f"{p}.mlp.down_proj": Float8RowwiseParallel(),
+            }
+        )
     return plan

@@ -21,12 +21,13 @@ Design follows FusedRMSNorm pattern exactly:
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Forward Kernel
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -39,15 +40,15 @@ from torch import Tensor
 )
 @triton.jit
 def _layer_norm_fwd_kernel(
-    X,          # [N, D] input
-    Y,          # [N, D] output (normalized x_hat, WITHOUT weight/bias)
-    Mean,       # [N] row means (for backward)
-    Rstd,       # [N] reciprocal std (for backward)
-    N,          # number of rows
-    D,          # number of columns
-    stride_x,   # X row stride
-    stride_y,   # Y row stride
-    eps,        # epsilon
+    X,  # [N, D] input
+    Y,  # [N, D] output (normalized x_hat, WITHOUT weight/bias)
+    Mean,  # [N] row means (for backward)
+    Rstd,  # [N] reciprocal std (for backward)
+    N,  # number of rows
+    D,  # number of columns
+    stride_x,  # X row stride
+    stride_y,  # Y row stride
+    eps,  # epsilon
     BLOCK_D: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
@@ -97,6 +98,7 @@ def _layer_norm_fwd_kernel(
 # Backward Kernel
 # =============================================================================
 
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
@@ -108,13 +110,16 @@ def _layer_norm_fwd_kernel(
 )
 @triton.jit
 def _layer_norm_bwd_kernel(
-    GradY,      # [N, D] upstream gradient (includes weight effect from chain rule)
-    X,          # [N, D] input from forward
-    Mean,       # [N] row means from forward
-    Rstd,       # [N] reciprocal std from forward
-    GradX,      # [N, D] output: input gradient
-    N, D,
-    stride_gy, stride_x, stride_gx,
+    GradY,  # [N, D] upstream gradient (includes weight effect from chain rule)
+    X,  # [N, D] input from forward
+    Mean,  # [N] row means from forward
+    Rstd,  # [N] reciprocal std from forward
+    GradX,  # [N, D] output: input gradient
+    N,
+    D,
+    stride_gy,
+    stride_x,
+    stride_gx,
     BLOCK_D: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
@@ -162,6 +167,7 @@ def _layer_norm_bwd_kernel(
 # Python Wrappers
 # =============================================================================
 
+
 def _layer_norm_forward(x: Tensor, eps: float):
     orig_shape = x.shape
     x_2d = x.reshape(-1, orig_shape[-1]).contiguous()
@@ -174,9 +180,14 @@ def _layer_norm_forward(x: Tensor, eps: float):
 
     use_fp64 = x.dtype == torch.float64
     _layer_norm_fwd_kernel[(N,)](
-        x_2d, y, mean, rstd,
-        N, D,
-        x_2d.stride(0), y.stride(0),
+        x_2d,
+        y,
+        mean,
+        rstd,
+        N,
+        D,
+        x_2d.stride(0),
+        y.stride(0),
         eps,
         USE_FP64=use_fp64,
     )
@@ -193,9 +204,16 @@ def _layer_norm_backward(grad_y: Tensor, x: Tensor, mean: Tensor, rstd: Tensor):
     grad_x = torch.empty_like(x_2d)
     use_fp64 = grad_y.dtype == torch.float64
     _layer_norm_bwd_kernel[(N,)](
-        grad_y_2d, x_2d, mean, rstd, grad_x,
-        N, D,
-        grad_y_2d.stride(0), x_2d.stride(0), grad_x.stride(0),
+        grad_y_2d,
+        x_2d,
+        mean,
+        rstd,
+        grad_x,
+        N,
+        D,
+        grad_y_2d.stride(0),
+        x_2d.stride(0),
+        grad_x.stride(0),
         USE_FP64=use_fp64,
     )
 
@@ -205,6 +223,7 @@ def _layer_norm_backward(grad_y: Tensor, x: Tensor, mean: Tensor, rstd: Tensor):
 # =============================================================================
 # Autograd Function
 # =============================================================================
+
 
 class _FusedLayerNormFn(torch.autograd.Function):
     """Fused LayerNorm without weight/bias — they are applied via standard
@@ -245,9 +264,12 @@ def fused_layer_norm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5)
 def layer_norm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
     """LayerNorm with automatic Triton dispatch."""
     import os
-    if (os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
-            and x.is_cuda
-            and x.numel() // x.shape[-1] >= _FUSED_LAYERNORM_THRESHOLD):
+
+    if (
+        os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
+        and x.is_cuda
+        and x.numel() // x.shape[-1] >= _FUSED_LAYERNORM_THRESHOLD
+    ):
         return fused_layer_norm(x, weight, bias, eps)
     # Fallback: standard PyTorch
     return torch.nn.functional.layer_norm(x, weight.shape, weight, bias, eps)

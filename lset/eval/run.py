@@ -10,6 +10,7 @@ from lset.config import LSETConfig
 def run_eval(config: LSETConfig):
     """Run MTEB evaluation with the given config."""
     import mteb
+
     from lset.eval import LSETMTEBModel
 
     model_path = str(Path(config.model.path).expanduser())
@@ -27,18 +28,19 @@ def run_eval(config: LSETConfig):
 
     tasks = mteb.get_tasks(tasks=task_names)
     results = mteb.evaluate(
-        model, tasks,
+        model,
+        tasks,
         encode_kwargs={"batch_size": config.eval.batch_size},
     )
 
     # Print summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("MTEB Evaluation Results")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for tr in results:
         for split in ("test", "dev", "validation"):
             if split in tr.scores and tr.scores[split]:
                 score = tr.scores[split][0].get("main_score", 0)
                 print(f"  {tr.task_name:30s}  {split:10s}  {score:.4f}")
                 break
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")

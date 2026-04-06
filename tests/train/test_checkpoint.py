@@ -6,7 +6,8 @@ import tempfile
 import torch
 import torch.nn as nn
 
-from lset.train.checkpoint import save_checkpoint, load_checkpoint
+from lset.train.checkpoint import load_checkpoint
+from lset.train.checkpoint import save_checkpoint
 
 
 def test_checkpoint_roundtrip():
@@ -59,8 +60,10 @@ def test_optimizer_state_restored():
         optimizer.zero_grad()
 
     # Get optimizer state
-    state_before = {k: v.clone() if isinstance(v, torch.Tensor) else v
-                    for k, v in optimizer.state[list(optimizer.state.keys())[0]].items()}
+    state_before = {
+        k: v.clone() if isinstance(v, torch.Tensor) else v
+        for k, v in optimizer.state[list(optimizer.state.keys())[0]].items()
+    }
 
     with tempfile.TemporaryDirectory() as tmpdir:
         save_checkpoint(model, optimizer, step=5, output_dir=tmpdir)
@@ -72,8 +75,10 @@ def test_optimizer_state_restored():
         checkpoint_dir = os.path.join(tmpdir, "step_5")
         load_checkpoint(model2, optimizer2, checkpoint_dir)
 
-        state_after = {k: v.clone() if isinstance(v, torch.Tensor) else v
-                       for k, v in optimizer2.state[list(optimizer2.state.keys())[0]].items()}
+        state_after = {
+            k: v.clone() if isinstance(v, torch.Tensor) else v
+            for k, v in optimizer2.state[list(optimizer2.state.keys())[0]].items()
+        }
 
         for key in state_before:
             if isinstance(state_before[key], torch.Tensor):

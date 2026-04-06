@@ -3,13 +3,17 @@
 import torch
 import torch.nn.functional as F
 
-from lset.losses.infonce import infonce_loss
 from lset.losses.contrastive import contrastive_loss
+from lset.losses.infonce import infonce_loss
 
 
-def matryoshka_loss(query_embeds: torch.Tensor, doc_embeds: torch.Tensor,
-                    dims: list[int], temperature: float = 0.02,
-                    labels: torch.Tensor | None = None) -> torch.Tensor:
+def matryoshka_loss(
+    query_embeds: torch.Tensor,
+    doc_embeds: torch.Tensor,
+    dims: list[int],
+    temperature: float = 0.02,
+    labels: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Compute MRL loss: average contrastive loss over multiple embedding dimensions.
 
     Args:

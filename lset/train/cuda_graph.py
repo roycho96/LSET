@@ -40,7 +40,10 @@ class CUDAGraphWrapper:
 
         # Create static input buffers (addresses fixed at capture time)
         self.static_input_ids = torch.zeros(
-            batch_size, seq_length, dtype=torch.long, device=device,
+            batch_size,
+            seq_length,
+            dtype=torch.long,
+            device=device,
         )
         # No attention_mask for CUDA graph capture — causal mask construction
         # creates CPU tensors which can't be copied during capture.

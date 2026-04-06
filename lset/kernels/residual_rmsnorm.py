@@ -21,12 +21,13 @@ Saves: 1 full (batch × seq × hidden) tensor write per call.
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Forward Kernel
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -39,13 +40,17 @@ from torch import Tensor
 )
 @triton.jit
 def _residual_rms_norm_fwd_kernel(
-    RESIDUAL,       # [N, D] residual input
-    ATTN_OUT,       # [N, D] attention/MLP output
-    Y,              # [N, D] normalized output (x_hat, WITHOUT weight)
-    NEW_RESIDUAL,   # [N, D] residual + attn_out (saved for next layer)
-    RSTD,           # [N] reciprocal std for backward
-    N, D,
-    stride_r, stride_a, stride_y, stride_nr,
+    RESIDUAL,  # [N, D] residual input
+    ATTN_OUT,  # [N, D] attention/MLP output
+    Y,  # [N, D] normalized output (x_hat, WITHOUT weight)
+    NEW_RESIDUAL,  # [N, D] residual + attn_out (saved for next layer)
+    RSTD,  # [N] reciprocal std for backward
+    N,
+    D,
+    stride_r,
+    stride_a,
+    stride_y,
+    stride_nr,
     eps,
     BLOCK_D: tl.constexpr,
 ):
@@ -83,6 +88,7 @@ def _residual_rms_norm_fwd_kernel(
 # Backward Kernel
 # =============================================================================
 
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
@@ -94,12 +100,15 @@ def _residual_rms_norm_fwd_kernel(
 )
 @triton.jit
 def _residual_rms_norm_bwd_kernel(
-    GRAD_Y,         # [N, D] upstream gradient (includes weight effect)
-    NEW_RESIDUAL,   # [N, D] saved from forward
-    RSTD,           # [N] reciprocal std from forward
-    GRAD_INPUT,     # [N, D] gradient for BOTH residual and attn_out (same grad)
-    N, D,
-    stride_gy, stride_nr, stride_gi,
+    GRAD_Y,  # [N, D] upstream gradient (includes weight effect)
+    NEW_RESIDUAL,  # [N, D] saved from forward
+    RSTD,  # [N] reciprocal std from forward
+    GRAD_INPUT,  # [N, D] gradient for BOTH residual and attn_out (same grad)
+    N,
+    D,
+    stride_gy,
+    stride_nr,
+    stride_gi,
     BLOCK_D: tl.constexpr,
 ):
     """Backward for fused residual + RMSNorm.
@@ -139,6 +148,7 @@ def _residual_rms_norm_bwd_kernel(
 # Python Wrappers
 # =============================================================================
 
+
 def _residual_rms_norm_forward(residual: Tensor, attn_out: Tensor, eps: float):
     orig_shape = residual.shape
     D = orig_shape[-1]
@@ -151,10 +161,17 @@ def _residual_rms_norm_forward(residual: Tensor, attn_out: Tensor, eps: float):
     rstd = torch.empty(N, device=residual.device, dtype=torch.float32)
 
     _residual_rms_norm_fwd_kernel[(N,)](
-        residual_2d, attn_out_2d, y, new_residual, rstd,
-        N, D,
-        residual_2d.stride(0), attn_out_2d.stride(0),
-        y.stride(0), new_residual.stride(0),
+        residual_2d,
+        attn_out_2d,
+        y,
+        new_residual,
+        rstd,
+        N,
+        D,
+        residual_2d.stride(0),
+        attn_out_2d.stride(0),
+        y.stride(0),
+        new_residual.stride(0),
         eps,
     )
     return y.reshape(orig_shape), new_residual.reshape(orig_shape), rstd
@@ -169,9 +186,15 @@ def _residual_rms_norm_backward(grad_y: Tensor, new_residual: Tensor, rstd: Tens
 
     grad_input = torch.empty_like(nr_2d)
     _residual_rms_norm_bwd_kernel[(N,)](
-        grad_y_2d, nr_2d, rstd, grad_input,
-        N, D,
-        grad_y_2d.stride(0), nr_2d.stride(0), grad_input.stride(0),
+        grad_y_2d,
+        nr_2d,
+        rstd,
+        grad_input,
+        N,
+        D,
+        grad_y_2d.stride(0),
+        nr_2d.stride(0),
+        grad_input.stride(0),
     )
     return grad_input.reshape(orig_shape)
 
@@ -179,6 +202,7 @@ def _residual_rms_norm_backward(grad_y: Tensor, new_residual: Tensor, rstd: Tens
 # =============================================================================
 # Autograd Function
 # =============================================================================
+
 
 class _FusedResidualRMSNormFn(torch.autograd.Function):
     """Fused residual-add + RMSNorm.
@@ -212,7 +236,10 @@ _FUSED_THRESHOLD = 256
 
 
 def fused_residual_rms_norm(
-    residual: Tensor, attn_out: Tensor, weight: Tensor, eps: float = 1e-6,
+    residual: Tensor,
+    attn_out: Tensor,
+    weight: Tensor,
+    eps: float = 1e-6,
 ) -> tuple[Tensor, Tensor]:
     """Fused residual-add + RMSNorm — force fused path.
 
@@ -226,13 +253,19 @@ def fused_residual_rms_norm(
 
 
 def residual_rms_norm(
-    residual: Tensor, attn_out: Tensor, weight: Tensor, eps: float = 1e-6,
+    residual: Tensor,
+    attn_out: Tensor,
+    weight: Tensor,
+    eps: float = 1e-6,
 ) -> tuple[Tensor, Tensor]:
     """Residual-add + RMSNorm with automatic Triton dispatch."""
     import os
-    if (os.environ.get("LSET_DISABLE_FUSED_RESIDUAL_RMSNORM") != "1"
-            and residual.is_cuda
-            and residual.numel() // residual.shape[-1] >= _FUSED_THRESHOLD):
+
+    if (
+        os.environ.get("LSET_DISABLE_FUSED_RESIDUAL_RMSNORM") != "1"
+        and residual.is_cuda
+        and residual.numel() // residual.shape[-1] >= _FUSED_THRESHOLD
+    ):
         return fused_residual_rms_norm(residual, attn_out, weight, eps)
     # Fallback: standard PyTorch
     new_residual = residual + attn_out

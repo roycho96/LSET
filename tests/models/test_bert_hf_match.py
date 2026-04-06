@@ -10,7 +10,9 @@ def test_bert_hf_match():
     model_path = "/home/roy/models/bert-base-uncased"
 
     # --- HF model ---
-    from transformers import BertModel, BertTokenizer
+    from transformers import BertModel
+    from transformers import BertTokenizer
+
     hf_model = BertModel.from_pretrained(model_path).cuda().eval()
     tokenizer = BertTokenizer.from_pretrained(model_path)
 
@@ -23,6 +25,7 @@ def test_bert_hf_match():
 
     # --- LSET model ---
     from lset.models import get_model_spec
+
     spec = get_model_spec("bert")
     config = spec.config_cls.from_hf_json(f"{model_path}/config.json")
     lset_model = spec.model_cls(config)
@@ -56,7 +59,9 @@ def test_bge_m3_hf_match():
     model_path = "/home/roy/models/bge-m3"
 
     # --- HF model ---
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoModel
+    from transformers import AutoTokenizer
+
     hf_model = AutoModel.from_pretrained(model_path).cuda().eval()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
@@ -69,6 +74,7 @@ def test_bge_m3_hf_match():
 
     # --- LSET model ---
     from lset.models import get_model_spec
+
     spec = get_model_spec("xlm-roberta")
     config = spec.config_cls.from_hf_json(f"{model_path}/config.json")
     lset_model = spec.model_cls(config)

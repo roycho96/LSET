@@ -1,9 +1,11 @@
 """Embedding dataset supporting multiple data formats."""
 
 import json
+
 from pathlib import Path
-from torch.utils.data import Dataset
+
 from tokenizers import Tokenizer
+from torch.utils.data import Dataset
 
 
 class EmbeddingDataset(Dataset):
@@ -26,9 +28,14 @@ class EmbeddingDataset(Dataset):
     Tokenization happens in the collator, NOT here.
     """
 
-    def __init__(self, data_path: str | Path, tokenizer: Tokenizer,
-                 max_length: int = 512, template=None,
-                 num_hard_negatives: int = 0):
+    def __init__(
+        self,
+        data_path: str | Path,
+        tokenizer: Tokenizer,
+        max_length: int = 512,
+        template=None,
+        num_hard_negatives: int = 0,
+    ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.template = template
@@ -73,7 +80,7 @@ class EmbeddingDataset(Dataset):
 
     def _tokenize(self, text: str) -> dict:
         encoding = self.tokenizer.encode(text)
-        ids = encoding.ids[:self.max_length]
+        ids = encoding.ids[: self.max_length]
         mask = [1] * len(ids)
         return {"input_ids": ids, "attention_mask": mask}
 
@@ -111,7 +118,7 @@ class EmbeddingDataset(Dataset):
             negatives = []
 
         if self.num_hard_negatives > 0 and negatives:
-            negatives = negatives[:self.num_hard_negatives]
+            negatives = negatives[: self.num_hard_negatives]
 
         return {
             "query": query,

@@ -10,10 +10,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
 from lset.models.decoder.llama.attention import LlamaRotaryEmbedding
 from lset.models.decoder.llama.block import LlamaBlock
 from lset.models.decoder.llama.config import LlamaConfig
+from lset.models.decoder.qwen3.attention import Qwen3RMSNorm as LlamaRMSNorm
 
 
 class LlamaDecoder(nn.Module):
@@ -22,13 +22,14 @@ class LlamaDecoder(nn.Module):
         self.config = config
         self.fused_projections = fused_projections
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([
-            LlamaBlock(config, fused_projections=fused_projections)
-            for _ in range(config.num_hidden_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [LlamaBlock(config, fused_projections=fused_projections) for _ in range(config.num_hidden_layers)]
+        )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(
-            config.head_dim, config.max_position_embeddings, config.rope_theta,
+            config.head_dim,
+            config.max_position_embeddings,
+            config.rope_theta,
             rope_scaling=config.rope_scaling,
         )
 
@@ -55,8 +56,11 @@ class LlamaDecoder(nn.Module):
         return_lm_logits: bool = False,
     ) -> dict[str, torch.Tensor]:
         return self(
-            input_ids, return_lm_logits=return_lm_logits,
-            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            input_ids,
+            return_lm_logits=return_lm_logits,
+            position_ids=position_ids,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
 
     def _forward_padded(
@@ -85,6 +89,7 @@ class LlamaDecoder(nn.Module):
         # DTensor → full tensor for pooling
         try:
             from torch.distributed._tensor import DTensor
+
             if isinstance(hidden_states, DTensor):
                 hidden_states = hidden_states.full_tensor()
         except ImportError:
@@ -111,8 +116,12 @@ class LlamaDecoder(nn.Module):
 
         for layer in self.layers:
             hidden_states = layer(
-                hidden_states, cos, sin,
-                position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+                hidden_states,
+                cos,
+                sin,
+                position_ids=position_ids,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -123,9 +132,7 @@ class LlamaDecoder(nn.Module):
         return result
 
     @staticmethod
-    def _make_padding_mask(
-        attention_mask: torch.Tensor, dtype: torch.dtype, device: torch.device
-    ) -> torch.Tensor:
+    def _make_padding_mask(attention_mask: torch.Tensor, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
         """Bidirectional padding mask (no causal component)."""
         # [B, 1, 1, S] — -inf for padding, 0 for real tokens
         return torch.where(

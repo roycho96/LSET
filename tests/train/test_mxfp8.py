@@ -13,8 +13,9 @@ import torch.nn as nn
 class TestMXFP8:
     def test_apply_mxfp8_training(self):
         """MXLinear modules should be created."""
-        from lset.distributed.mx import apply_mxfp8_training
         from torchao.prototype.mx_formats.mx_linear import MXLinear
+
+        from lset.distributed.mx import apply_mxfp8_training
 
         model = nn.Sequential(
             nn.Linear(64, 128, bias=False, dtype=torch.bfloat16, device="cuda"),
@@ -72,10 +73,11 @@ class TestMXFP8:
             optimizer.step()
             optimizer.zero_grad()
             losses.append(loss.item())
-        assert all(not torch.isnan(torch.tensor(l)) for l in losses)
+        assert all(not torch.isnan(torch.tensor(v)) for v in losses)
 
     def test_mxfp8_invalid_recipe(self):
         from lset.distributed.mx import apply_mxfp8_training
+
         model = nn.Linear(64, 128, device="cuda", dtype=torch.bfloat16)
         with pytest.raises(ValueError, match="Invalid MXFP8 recipe"):
             apply_mxfp8_training(model, recipe="invalid")

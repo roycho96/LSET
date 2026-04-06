@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import sys
 
-
 HELP_TEXT = """\
 LSET - Large Scale Embedding Trainer
 
@@ -36,7 +35,8 @@ def _extract_config_path(args: list[str]) -> str | None:
 
 
 def cmd_train(args: list[str]):
-    from lset.config import LSETConfig, parse_overrides
+    from lset.config import LSETConfig
+    from lset.config import parse_overrides
 
     config_path = _extract_config_path(args)
     if not config_path:
@@ -53,25 +53,32 @@ def cmd_train(args: list[str]):
 
     if world_size > 1:
         import subprocess
+
         # Rebuild override args for subprocess
         override_args = []
         for k, v in overrides:
             override_args.extend([f"--{k}", v])
         cmd = [
-            sys.executable, "-m", "torch.distributed.run",
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
             f"--nproc_per_node={world_size}",
-            "-m", "lset.train.main",
-            "--config", config_path,
+            "-m",
+            "lset.train.main",
+            "--config",
+            config_path,
         ] + override_args
         result = subprocess.run(cmd)
         sys.exit(result.returncode)
     else:
         from lset.train.main import train
+
         train(config)
 
 
 def cmd_eval(args: list[str]):
-    from lset.config import LSETConfig, parse_overrides
+    from lset.config import LSETConfig
+    from lset.config import parse_overrides
 
     config_path = _extract_config_path(args)
     if not config_path:
@@ -84,6 +91,7 @@ def cmd_eval(args: list[str]):
     config.apply_overrides(overrides)
 
     from lset.eval.run import run_eval
+
     run_eval(config)
 
 

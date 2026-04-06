@@ -1,9 +1,10 @@
 """Tests for YAML config system."""
 
-
 import pytest
 
-from lset.config import LSETConfig, parse_overrides, _coerce_value
+from lset.config import LSETConfig
+from lset.config import _coerce_value
+from lset.config import parse_overrides
 
 
 class TestConfigLoad:
@@ -77,8 +78,7 @@ class TestOverrides:
     """CLI override parsing and application."""
 
     def test_parse_overrides(self):
-        args = ["--config", "x.yaml", "--training.batch_size", "16",
-                "--packing.enabled", "true"]
+        args = ["--config", "x.yaml", "--training.batch_size", "16", "--packing.enabled", "true"]
         overrides = parse_overrides(args)
         assert ("training.batch_size", "16") in overrides
         assert ("packing.enabled", "true") in overrides

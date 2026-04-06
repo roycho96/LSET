@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.decoder.qwen3.attention import Qwen3RMSNorm, Qwen3RotaryEmbedding
+from lset.models.decoder.qwen3.attention import Qwen3RMSNorm
+from lset.models.decoder.qwen3.attention import Qwen3RotaryEmbedding
 from lset.models.decoder.qwen3.block import Qwen3Block
 from lset.models.decoder.qwen3.config import Qwen3Config
 
@@ -15,14 +16,11 @@ class Qwen3Decoder(nn.Module):
         self.config = config
         self.fused_projections = fused_projections
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([
-            Qwen3Block(config, fused_projections=fused_projections)
-            for _ in range(config.num_hidden_layers)
-        ])
-        self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = Qwen3RotaryEmbedding(
-            config.head_dim, config.max_position_embeddings, config.rope_theta
+        self.layers = nn.ModuleList(
+            [Qwen3Block(config, fused_projections=fused_projections) for _ in range(config.num_hidden_layers)]
         )
+        self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Qwen3RotaryEmbedding(config.head_dim, config.max_position_embeddings, config.rope_theta)
 
     def forward(
         self,
@@ -53,8 +51,11 @@ class Qwen3Decoder(nn.Module):
     ) -> dict[str, torch.Tensor]:
         """Convenience method — routes through forward() for FSDP2 compatibility."""
         return self(
-            input_ids, return_lm_logits=return_lm_logits,
-            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            input_ids,
+            return_lm_logits=return_lm_logits,
+            position_ids=position_ids,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
 
     def _forward_padded(
@@ -86,6 +87,7 @@ class Qwen3Decoder(nn.Module):
         # Pooling needs the full sequence, so gather back to a regular tensor.
         try:
             from torch.distributed._tensor import DTensor
+
             if isinstance(hidden_states, DTensor):
                 hidden_states = hidden_states.full_tensor()
         except ImportError:
@@ -112,8 +114,12 @@ class Qwen3Decoder(nn.Module):
 
         for layer in self.layers:
             hidden_states = layer(
-                hidden_states, cos, sin,
-                position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+                hidden_states,
+                cos,
+                sin,
+                position_ids=position_ids,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -124,14 +130,14 @@ class Qwen3Decoder(nn.Module):
         return result
 
     @staticmethod
-    def _make_causal_mask(
-        attention_mask: torch.Tensor, dtype: torch.dtype, device: torch.device
-    ) -> torch.Tensor:
+    def _make_causal_mask(attention_mask: torch.Tensor, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
         B, S = attention_mask.shape
         # Causal mask: upper triangle is -inf [1, 1, S, S]
-        causal = torch.triu(
-            torch.full((S, S), float("-inf"), dtype=dtype, device=device), diagonal=1
-        ).unsqueeze(0).unsqueeze(0)
+        causal = (
+            torch.triu(torch.full((S, S), float("-inf"), dtype=dtype, device=device), diagonal=1)
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
         # Padding mask: -inf where mask==0, 0 where mask==1 [B, 1, 1, S]
         pad_mask = torch.where(
             attention_mask[:, None, None, :].bool(),

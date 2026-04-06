@@ -1,11 +1,11 @@
 """Learning rate schedulers with warmup support."""
 
 import math
+
 from torch.optim.lr_scheduler import LambdaLR
 
 
-def build_scheduler(optimizer, scheduler_type: str, max_steps: int,
-                    warmup_steps: int = 0, **kwargs):
+def build_scheduler(optimizer, scheduler_type: str, max_steps: int, warmup_steps: int = 0, **kwargs):
     """Build a learning rate scheduler with optional warmup.
 
     Args:
@@ -18,6 +18,7 @@ def build_scheduler(optimizer, scheduler_type: str, max_steps: int,
     Returns:
         LambdaLR scheduler.
     """
+
     def lr_lambda(current_step):
         # Warmup phase
         if current_step < warmup_steps:

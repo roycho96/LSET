@@ -1,7 +1,8 @@
 """Tests for model registry and auto-detection."""
 
-
-from lset.models.registry import get_model_spec, detect_model_type, ModelSpec
+from lset.models.registry import ModelSpec
+from lset.models.registry import detect_model_type
+from lset.models.registry import get_model_spec
 
 
 def test_all_models_registered():

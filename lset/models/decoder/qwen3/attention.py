@@ -4,10 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.decoder.qwen3.config import Qwen3Config
-from lset.kernels import rms_norm as _fused_rms_norm
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
-
+from lset.kernels import rms_norm as _fused_rms_norm
+from lset.models.decoder.qwen3.config import Qwen3Config
 
 # Global attention backend setting: "auto" | "flash_attn" | "varlen_attn" | "sdpa"
 _ATTN_BACKEND = "auto"
@@ -16,8 +15,7 @@ _ATTN_BACKEND = "auto"
 def set_attn_backend(backend: str):
     """Set the global attention backend for packed mode."""
     global _ATTN_BACKEND
-    assert backend in ("auto", "flash_attn", "varlen_attn", "sdpa"), \
-        f"Invalid backend: {backend}"
+    assert backend in ("auto", "flash_attn", "varlen_attn", "sdpa"), f"Invalid backend: {backend}"
     _ATTN_BACKEND = backend
 
 
@@ -172,8 +170,14 @@ class Qwen3Attention(nn.Module):
         local_kv_heads = k.shape[1]
         local_kv_groups = local_q_heads // local_kv_heads
         attn_out = _flash_or_sdpa_packed(
-            q, k, v, cu_seqlens, max_seqlen,
-            local_q_heads, local_kv_heads, local_kv_groups,
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen,
+            local_q_heads,
+            local_kv_heads,
+            local_kv_groups,
         )
 
         attn_out = attn_out.reshape(T, -1)
@@ -186,9 +190,9 @@ def _try_varlen_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
         return None
     try:
         from torch.nn.attention.varlen import varlen_attn
+
         window = (-1, 0) if causal else (-1, -1)
-        return varlen_attn(q, k, v, cu_seqlens, cu_seqlens,
-                          max_seqlen, max_seqlen, window_size=window)
+        return varlen_attn(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, window_size=window)
     except ImportError:
         return None
 
@@ -199,8 +203,11 @@ def _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
         return None
     try:
         from flash_attn import flash_attn_varlen_func
+
         return flash_attn_varlen_func(
-            q, k, v,
+            q,
+            k,
+            v,
             cu_seqlens_q=cu_seqlens,
             cu_seqlens_k=cu_seqlens,
             max_seqlen_q=max_seqlen,
@@ -211,9 +218,7 @@ def _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
         return None
 
 
-def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
-                          num_heads, num_kv_heads, num_kv_groups,
-                          causal=True):
+def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_heads, num_kv_groups, causal=True):
     """Configurable attention backend for packed sequences.
 
     Backend selection ("auto" strategy):
@@ -243,15 +248,19 @@ def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen,
             return result
 
     return _sdpa_packed_fallback(
-        q, k, v, cu_seqlens, max_seqlen,
-        num_heads, num_kv_heads, num_kv_groups,
+        q,
+        k,
+        v,
+        cu_seqlens,
+        max_seqlen,
+        num_heads,
+        num_kv_heads,
+        num_kv_groups,
         causal=causal,
     )
 
 
-def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen,
-                          num_heads, num_kv_heads, num_kv_groups,
-                          causal=True):
+def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_heads, num_kv_groups, causal=True):
     """SDPA fallback for packed sequences when flash_attn is unavailable.
 
     Builds a block-diagonal mask and runs SDPA on (1, T, ...) tensors.

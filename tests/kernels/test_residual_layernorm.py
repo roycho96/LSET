@@ -8,15 +8,13 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from lset.kernels.residual_layernorm import (
-    fused_residual_layer_norm,
-    residual_layer_norm,
-)
-
+from lset.kernels.residual_layernorm import fused_residual_layer_norm
+from lset.kernels.residual_layernorm import residual_layer_norm
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _reference(residual, attn_out, weight, bias, eps=1e-5):
     new_residual = residual + attn_out
@@ -34,6 +32,7 @@ def device():
 # ---------------------------------------------------------------------------
 # 1. Numerical match — bf16
 # ---------------------------------------------------------------------------
+
 
 def test_numerical_match_bf16(device):
     N, D = 128, 768
@@ -54,6 +53,7 @@ def test_numerical_match_bf16(device):
 # 2. Numerical match — fp32
 # ---------------------------------------------------------------------------
 
+
 def test_numerical_match_fp32(device):
     N, D = 128, 768
     torch.manual_seed(0)
@@ -72,6 +72,7 @@ def test_numerical_match_fp32(device):
 # ---------------------------------------------------------------------------
 # 3. 3-D tensor (B, S, D)
 # ---------------------------------------------------------------------------
+
 
 def test_3d_tensor(device):
     B, S, D = 2, 64, 768
@@ -93,6 +94,7 @@ def test_3d_tensor(device):
 # ---------------------------------------------------------------------------
 # 4. Gradient correctness — residual and attn_out
 # ---------------------------------------------------------------------------
+
 
 def test_gradient_correctness(device):
     N, D = 64, 256
@@ -122,6 +124,7 @@ def test_gradient_correctness(device):
 # 5. Gradient correctness — weight and bias
 # ---------------------------------------------------------------------------
 
+
 def test_gradient_weight_bias(device):
     N, D = 64, 256
     torch.manual_seed(2)
@@ -149,6 +152,7 @@ def test_gradient_weight_bias(device):
 # 6. gradcheck — fp64
 # ---------------------------------------------------------------------------
 
+
 def test_gradcheck_fp64(device):
     N, D = 8, 32
     torch.manual_seed(3)
@@ -169,6 +173,7 @@ def test_gradcheck_fp64(device):
 # 7. Auto-dispatch CPU fallback
 # ---------------------------------------------------------------------------
 
+
 def test_auto_dispatch_cpu_fallback():
     N, D = 512, 128
     torch.manual_seed(4)
@@ -187,6 +192,7 @@ def test_auto_dispatch_cpu_fallback():
 # ---------------------------------------------------------------------------
 # 8. new_residual is exactly residual + attn_out
 # ---------------------------------------------------------------------------
+
 
 def test_new_residual_is_sum(device):
     N, D = 256, 512

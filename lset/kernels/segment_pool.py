@@ -15,12 +15,13 @@ One program per sequence. Inner loop over tokens in the segment.
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Forward Kernels
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -33,12 +34,12 @@ from torch import Tensor
 )
 @triton.jit
 def _segment_mean_fwd_kernel(
-    HIDDEN,         # [T, H] packed hidden states
-    CU_SEQLENS,     # [M+1] cumulative sequence lengths
-    OUTPUT,         # [M, H] output (mean per segment)
+    HIDDEN,  # [T, H] packed hidden states
+    CU_SEQLENS,  # [M+1] cumulative sequence lengths
+    OUTPUT,  # [M, H] output (mean per segment)
     H: tl.constexpr,
-    stride_h,       # HIDDEN stride for row
-    stride_o,       # OUTPUT stride for row
+    stride_h,  # HIDDEN stride for row
+    stride_o,  # OUTPUT stride for row
     BLOCK_H: tl.constexpr,
 ):
     seg = tl.program_id(0)
@@ -56,8 +57,7 @@ def _segment_mean_fwd_kernel(
             acc += vals.to(tl.float32)
 
         mean = acc / length.to(tl.float32)
-        tl.store(OUTPUT + seg * stride_o + h_offs, mean.to(OUTPUT.dtype.element_ty),
-                 mask=h_mask)
+        tl.store(OUTPUT + seg * stride_o + h_offs, mean.to(OUTPUT.dtype.element_ty), mask=h_mask)
 
 
 @triton.autotune(
@@ -71,10 +71,10 @@ def _segment_mean_fwd_kernel(
 )
 @triton.jit
 def _segment_mean_normalize_fwd_kernel(
-    HIDDEN,         # [T, H]
-    CU_SEQLENS,     # [M+1]
-    OUTPUT,         # [M, H] output (mean + L2-normalized)
-    NORMS,          # [M] L2 norms (for backward)
+    HIDDEN,  # [T, H]
+    CU_SEQLENS,  # [M+1]
+    OUTPUT,  # [M, H] output (mean + L2-normalized)
+    NORMS,  # [M] L2 norms (for backward)
     H: tl.constexpr,
     stride_h,
     stride_o,
@@ -101,8 +101,7 @@ def _segment_mean_normalize_fwd_kernel(
         sum_sq += tl.sum(mean * mean)
 
         # Store mean temporarily in output (overwritten in pass 2)
-        tl.store(OUTPUT + seg * stride_o + h_offs, mean.to(OUTPUT.dtype.element_ty),
-                 mask=h_mask)
+        tl.store(OUTPUT + seg * stride_o + h_offs, mean.to(OUTPUT.dtype.element_ty), mask=h_mask)
 
     # Compute L2 norm
     norm = tl.sqrt(sum_sq + eps)
@@ -115,13 +114,13 @@ def _segment_mean_normalize_fwd_kernel(
         h_mask = h_offs < H
         mean = tl.load(OUTPUT + seg * stride_o + h_offs, mask=h_mask, other=0.0)
         normed = mean.to(tl.float32) * inv_norm
-        tl.store(OUTPUT + seg * stride_o + h_offs, normed.to(OUTPUT.dtype.element_ty),
-                 mask=h_mask)
+        tl.store(OUTPUT + seg * stride_o + h_offs, normed.to(OUTPUT.dtype.element_ty), mask=h_mask)
 
 
 # =============================================================================
 # Backward Kernel
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -134,9 +133,9 @@ def _segment_mean_normalize_fwd_kernel(
 )
 @triton.jit
 def _segment_mean_bwd_kernel(
-    GRAD_OUTPUT,    # [M, H] upstream gradient
-    CU_SEQLENS,     # [M+1]
-    GRAD_HIDDEN,    # [T, H] gradient for hidden states
+    GRAD_OUTPUT,  # [M, H] upstream gradient
+    CU_SEQLENS,  # [M+1]
+    GRAD_HIDDEN,  # [T, H] gradient for hidden states
     H: tl.constexpr,
     stride_go,
     stride_gh,
@@ -157,24 +156,27 @@ def _segment_mean_bwd_kernel(
         grad_val = go.to(tl.float32) * inv_len
 
         for t in range(start, end):
-            tl.store(GRAD_HIDDEN + t * stride_gh + h_offs,
-                     grad_val.to(GRAD_HIDDEN.dtype.element_ty), mask=h_mask)
+            tl.store(GRAD_HIDDEN + t * stride_gh + h_offs, grad_val.to(GRAD_HIDDEN.dtype.element_ty), mask=h_mask)
 
 
 # =============================================================================
 # Autograd Functions
 # =============================================================================
 
+
 class _TritonSegmentMeanFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, hidden_states, cu_seqlens):
         M = cu_seqlens.shape[0] - 1
         H = hidden_states.shape[-1]
-        output = torch.empty(M, H, dtype=hidden_states.dtype,
-                             device=hidden_states.device)
+        output = torch.empty(M, H, dtype=hidden_states.dtype, device=hidden_states.device)
         _segment_mean_fwd_kernel[(M,)](
-            hidden_states, cu_seqlens, output,
-            H, hidden_states.stride(0), output.stride(0),
+            hidden_states,
+            cu_seqlens,
+            output,
+            H,
+            hidden_states.stride(0),
+            output.stride(0),
         )
         ctx.save_for_backward(cu_seqlens)
         ctx.T = hidden_states.shape[0]
@@ -183,13 +185,16 @@ class _TritonSegmentMeanFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        cu_seqlens, = ctx.saved_tensors
+        (cu_seqlens,) = ctx.saved_tensors
         M = cu_seqlens.shape[0] - 1
-        grad_hidden = torch.empty(ctx.T, ctx.H, dtype=grad_output.dtype,
-                                   device=grad_output.device)
+        grad_hidden = torch.empty(ctx.T, ctx.H, dtype=grad_output.dtype, device=grad_output.device)
         _segment_mean_bwd_kernel[(M,)](
-            grad_output.contiguous(), cu_seqlens, grad_hidden,
-            ctx.H, grad_output.stride(0), grad_hidden.stride(0),
+            grad_output.contiguous(),
+            cu_seqlens,
+            grad_hidden,
+            ctx.H,
+            grad_output.stride(0),
+            grad_hidden.stride(0),
         )
         return grad_hidden, None
 
@@ -199,12 +204,17 @@ class _TritonSegmentMeanNormalizeFn(torch.autograd.Function):
     def forward(ctx, hidden_states, cu_seqlens, eps):
         M = cu_seqlens.shape[0] - 1
         H = hidden_states.shape[-1]
-        output = torch.empty(M, H, dtype=hidden_states.dtype,
-                             device=hidden_states.device)
+        output = torch.empty(M, H, dtype=hidden_states.dtype, device=hidden_states.device)
         norms = torch.empty(M, dtype=torch.float32, device=hidden_states.device)
         _segment_mean_normalize_fwd_kernel[(M,)](
-            hidden_states, cu_seqlens, output, norms,
-            H, hidden_states.stride(0), output.stride(0), eps,
+            hidden_states,
+            cu_seqlens,
+            output,
+            norms,
+            H,
+            hidden_states.stride(0),
+            output.stride(0),
+            eps,
         )
         ctx.save_for_backward(output, norms, cu_seqlens)
         ctx.T = hidden_states.shape[0]
@@ -223,11 +233,14 @@ class _TritonSegmentMeanNormalizeFn(torch.autograd.Function):
         grad_mean = (grad_output - output * dot) / norms.unsqueeze(-1)
 
         # Grad through mean: each token gets grad_mean / length
-        grad_hidden = torch.empty(ctx.T, ctx.H, dtype=grad_output.dtype,
-                                   device=grad_output.device)
+        grad_hidden = torch.empty(ctx.T, ctx.H, dtype=grad_output.dtype, device=grad_output.device)
         _segment_mean_bwd_kernel[(M,)](
-            grad_mean.contiguous(), cu_seqlens, grad_hidden,
-            ctx.H, grad_mean.stride(0), grad_hidden.stride(0),
+            grad_mean.contiguous(),
+            cu_seqlens,
+            grad_hidden,
+            ctx.H,
+            grad_mean.stride(0),
+            grad_hidden.stride(0),
         )
         return grad_hidden, None, None
 
@@ -236,8 +249,11 @@ class _TritonSegmentMeanNormalizeFn(torch.autograd.Function):
 # Public API
 # =============================================================================
 
+
 def triton_segment_mean_pool(
-    hidden_states: Tensor, cu_seqlens: Tensor, normalize: bool = True,
+    hidden_states: Tensor,
+    cu_seqlens: Tensor,
+    normalize: bool = True,
     eps: float = 1e-12,
 ) -> Tensor:
     """Triton packed segment mean pooling.

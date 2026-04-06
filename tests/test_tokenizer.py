@@ -1,16 +1,15 @@
 """Test tokenizer loading."""
 
-import pytest
 from pathlib import Path
+
+import pytest
+
 from lset.tokenization.loader import load_tokenizer
 
 MODEL_PATH = "/home/roy/models/Qwen3-Embedding-0.6B"
 
 
-@pytest.mark.skipif(
-    not Path(MODEL_PATH).exists(),
-    reason="Model not available locally"
-)
+@pytest.mark.skipif(not Path(MODEL_PATH).exists(), reason="Model not available locally")
 def test_load_tokenizer():
     """Tokenizer loads and encodes text."""
     tokenizer = load_tokenizer(MODEL_PATH)
@@ -19,10 +18,7 @@ def test_load_tokenizer():
     print(f"Tokenized 'Hello world' → {len(enc.ids)} tokens: {enc.ids}")
 
 
-@pytest.mark.skipif(
-    not Path(MODEL_PATH).exists(),
-    reason="Model not available locally"
-)
+@pytest.mark.skipif(not Path(MODEL_PATH).exists(), reason="Model not available locally")
 def test_tokenizer_roundtrip():
     """Encode then decode returns original text."""
     tokenizer = load_tokenizer(MODEL_PATH)

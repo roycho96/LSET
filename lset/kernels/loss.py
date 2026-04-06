@@ -3,26 +3,28 @@ Fused Dense Embedding Loss
 """
 
 import math
+
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from torch import Tensor
-from typing import Optional
 
+from torch import Tensor
 
 # =============================================================================
 # Constants
 # =============================================================================
 
 LOSS_MULTI = 0  # MP-NCE
-LOSS_SOFT = 1   # Soft Label CE
+LOSS_SOFT = 1  # Soft Label CE
 LOSS_CROSS = 2  # Standard CE
 
 _LOSS_TYPE_MAP = {"multi": LOSS_MULTI, "soft": LOSS_SOFT, "cross": LOSS_CROSS}
 
 # LSE forward kernel mode (constexpr)
-LSE_NEG_ONLY = 0   # labels == 0  (for MP-NCE)
+LSE_NEG_ONLY = 0  # labels == 0  (for MP-NCE)
 LSE_VALID_ALL = 1  # labels >= 0  (for CE: pos+neg, excluding ignore)
 
 _GN_THRESHOLD = 128
@@ -32,6 +34,7 @@ _GM_THRESHOLD = 128
 # =============================================================================
 # Threshold: should_use_fused()
 # =============================================================================
+
 
 def should_use_fused(
     num_queries: int,
@@ -78,6 +81,7 @@ def should_use_fused(
 # Q Bucket (for autotune cache separation)
 # =============================================================================
 
+
 def _bucket_q(num_queries: int) -> int:
     """
     Bucket Q size into 3 ranges. Added to autotune key so that
@@ -106,6 +110,7 @@ def _bucket_q(num_queries: int) -> int:
 # =============================================================================
 # Autotune configs
 # =============================================================================
+
 
 def _fwd_configs():
     """Forward LSE kernel configs. BM=16 added (v6.1): more CTAs for small Q."""
@@ -164,37 +169,41 @@ def _bwd_dk_configs():
 # Forward Kernel: LogSumExp (LSE_MODE constexpr branching)
 # =============================================================================
 
+
 @triton.autotune(configs=_fwd_configs(), key=["hidden_dim", "q_bucket"])
 @triton.jit
 def _lse_fwd_kernel(
     # Tensor pointers
-    Q,                           # [num_queries, hidden_dim] query embeddings (already scaled)
-    K,                           # [num_docs, hidden_dim] document embeddings
-    Labels,                      # [num_queries, num_docs] int8 label matrix (-1=ignore, 0=neg, >0=pos)
-    OutLSE,                      # [num_queries] output: logsumexp value for each query
+    Q,  # [num_queries, hidden_dim] query embeddings (already scaled)
+    K,  # [num_docs, hidden_dim] document embeddings
+    Labels,  # [num_queries, num_docs] int8 label matrix (-1=ignore, 0=neg, >0=pos)
+    OutLSE,  # [num_queries] output: logsumexp value for each query
     # Dimension info
-    num_queries,                 # number of rows in Q (= number of queries)
-    num_docs,                    # number of rows in K (= number of documents)
-    hidden_dim,                  # embedding dimension (number of columns in Q, K)
-    q_bucket,                    # Q size bucket (0/1/2). For autotune cache separation. Not used inside kernel
+    num_queries,  # number of rows in Q (= number of queries)
+    num_docs,  # number of rows in K (= number of documents)
+    hidden_dim,  # embedding dimension (number of columns in Q, K)
+    q_bucket,  # Q size bucket (0/1/2). For autotune cache separation. Not used inside kernel
     # stride: element distance to next row/col in the tensor
     # e.g.: memory location of Q[i,j] = Q_ptr + i * stride_q_m + j * stride_q_d
-    stride_q_m, stride_q_d,      # Q (row, col) stride
-    stride_k_n, stride_k_d,      # K (row, col) stride
-    stride_l_m, stride_l_n,      # Labels (row, col) stride. stride_l_m = num_docs (skip one row = K elements)
+    stride_q_m,
+    stride_q_d,  # Q (row, col) stride
+    stride_k_n,
+    stride_k_d,  # K (row, col) stride
+    stride_l_m,
+    stride_l_n,  # Labels (row, col) stride. stride_l_m = num_docs (skip one row = K elements)
     # tl.constexpr: compile-time constants. Changing values triggers recompilation to separate GPU binaries (CUBIN)
-    BLOCK_M: tl.constexpr,       # Q-axis tile size (16/32/64). Number of queries processed by one CTA (thread block)
-    BLOCK_N: tl.constexpr,       # K-axis tile size. Number of documents seen per inner loop iteration
-    BLOCK_D: tl.constexpr,       # hidden_dim-axis tile size (128/256). Dot product computed in chunks of this size
-    GROUP_N: tl.constexpr,       # K-axis tile group count. If 2, processes BLOCK_N*2 docs per loop iteration
-    FP32_MODE: tl.constexpr,     # True if input is fp32. Controls tl.dot precision branching
-    ALLOW_TF32: tl.constexpr,    # True to allow tf32 tensorcore (only meaningful when FP32_MODE)
-    LSE_MODE: tl.constexpr,      # 0: neg only (labels==0 included, for MP-NCE)
-                                 # 1: valid all (labels>=0 included, for CE)
+    BLOCK_M: tl.constexpr,  # Q-axis tile size (16/32/64). Number of queries processed by one CTA (thread block)
+    BLOCK_N: tl.constexpr,  # K-axis tile size. Number of documents seen per inner loop iteration
+    BLOCK_D: tl.constexpr,  # hidden_dim-axis tile size (128/256). Dot product computed in chunks of this size
+    GROUP_N: tl.constexpr,  # K-axis tile group count. If 2, processes BLOCK_N*2 docs per loop iteration
+    FP32_MODE: tl.constexpr,  # True if input is fp32. Controls tl.dot precision branching
+    ALLOW_TF32: tl.constexpr,  # True to allow tf32 tensorcore (only meaningful when FP32_MODE)
+    LSE_MODE: tl.constexpr,  # 0: neg only (labels==0 included, for MP-NCE)
+    # 1: valid all (labels>=0 included, for CE)
     INT64_LABELS: tl.constexpr,  # True to use int64 for label pointer arithmetic.
-                                 # Labels stride_l_m = num_docs, and row * num_docs can
-                                 # overflow int32 max (2^31-1), reading wrong memory.
-                                 # Set True when Q*K > 2^31.
+    # Labels stride_l_m = num_docs, and row * num_docs can
+    # overflow int32 max (2^31-1), reading wrong memory.
+    # Set True when Q*K > 2^31.
 ):
     """
     Forward kernel computing logsumexp of selected scores for each query.
@@ -250,7 +259,9 @@ def _lse_fwd_kernel(
         # INT64_LABELS=True case: stride_l_m=num_docs is large, so query_row*num_docs
         # can exceed int32 range; cast offsets to int64 to compute
         if INT64_LABELS:
-            label_ptrs = Labels + offs_m[:, None].to(tl.int64) * stride_l_m + cur_offs_n[None, :].to(tl.int64) * stride_l_n
+            label_ptrs = (
+                Labels + offs_m[:, None].to(tl.int64) * stride_l_m + cur_offs_n[None, :].to(tl.int64) * stride_l_n
+            )
         else:
             label_ptrs = Labels + offs_m[:, None] * stride_l_m + cur_offs_n[None, :] * stride_l_n
         # mask: for out-of-bounds indices, use the `other` value instead of reading memory
@@ -264,10 +275,10 @@ def _lse_fwd_kernel(
         # [Create mask] Set True only for score positions to include in LSE
         if LSE_MODE == 0:
             # MP-NCE: only negative pair (label==0) scores go into logsumexp
-            mask = (labels_tile == 0)
+            mask = labels_tile == 0
         else:
             # CE family: include both positive and negative, exclude only ignore(-1)
-            mask = (labels_tile >= 0)
+            mask = labels_tile >= 0
 
         # [Compute Q@K^T score tile]
         # Instead of building the full score matrix, compute only the small tile
@@ -283,8 +294,12 @@ def _lse_fwd_kernel(
             # Load [BLOCK_NG, BLOCK_D] slice of K for the current doc block
             k_ptrs = K + cur_offs_n[:, None] * stride_k_n + cur_offs_d[None, :] * stride_k_d
             # mask prevents out-of-bounds reads. other=0.0 has no effect on dot product
-            q_tile = tl.load(q_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
-            k_tile = tl.load(k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
+            q_tile = tl.load(
+                q_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
+            k_tile = tl.load(
+                k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
             # tl.dot: matrix multiply using GPU tensor cores. [BLOCK_M, BLOCK_D] @ [BLOCK_D, BLOCK_NG]
             # tl.trans(k_tile): transpose K from [BLOCK_NG, BLOCK_D] to [BLOCK_D, BLOCK_NG]
             if FP32_MODE and not ALLOW_TF32:
@@ -334,41 +349,47 @@ def _lse_fwd_kernel(
 # Backward: dQ kernel (LOSS_TYPE branching)
 # =============================================================================
 
+
 @triton.autotune(configs=_bwd_dq_configs(), key=["hidden_dim", "q_bucket"], reset_to_zero=["dQ"])
 @triton.jit
 def _dq_bwd_kernel(
     # Tensor pointers
-    Q,                           # [num_queries, hidden_dim] query embeddings (same as forward)
-    K,                           # [num_docs, hidden_dim] document embeddings
-    Labels,                      # [num_queries, num_docs] int8 label matrix
-    dQ,                          # [num_queries, hidden_dim] output: query gradient (accumulated in fp32)
-    RefLSE,                      # [num_queries] logsumexp computed in forward
-                                 #   multi: neg_lse (logsumexp of negative scores)
-                                 #   soft/cross: all_lse (logsumexp of all valid scores)
-    Aux,                         # [num_queries] per-loss auxiliary value
-                                 #   multi: sum_weights = per-query sum of sigma(score - neg_lse)
-                                 #   soft/cross: label_sum = per-query sum of labels
-    W,                           # [num_queries] per-query loss weight (derived from softplus gradient)
+    Q,  # [num_queries, hidden_dim] query embeddings (same as forward)
+    K,  # [num_docs, hidden_dim] document embeddings
+    Labels,  # [num_queries, num_docs] int8 label matrix
+    dQ,  # [num_queries, hidden_dim] output: query gradient (accumulated in fp32)
+    RefLSE,  # [num_queries] logsumexp computed in forward
+    #   multi: neg_lse (logsumexp of negative scores)
+    #   soft/cross: all_lse (logsumexp of all valid scores)
+    Aux,  # [num_queries] per-loss auxiliary value
+    #   multi: sum_weights = per-query sum of sigma(score - neg_lse)
+    #   soft/cross: label_sum = per-query sum of labels
+    W,  # [num_queries] per-query loss weight (derived from softplus gradient)
     # Dimension info
-    num_queries, num_docs, hidden_dim,
-    q_bucket,                    # Q size bucket (for autotune cache separation, not used in kernel)
+    num_queries,
+    num_docs,
+    hidden_dim,
+    q_bucket,  # Q size bucket (for autotune cache separation, not used in kernel)
     # stride
-    stride_q_m, stride_q_d,      # Q, dQ (row, col) stride
-    stride_k_n, stride_k_d,      # K (row, col) stride
-    stride_l_m, stride_l_n,      # Labels (row, col) stride
+    stride_q_m,
+    stride_q_d,  # Q, dQ (row, col) stride
+    stride_k_n,
+    stride_k_d,  # K (row, col) stride
+    stride_l_m,
+    stride_l_n,  # Labels (row, col) stride
     # tl.constexpr
-    BLOCK_M: tl.constexpr,       # Q-axis tile size (16/32/64)
-    BLOCK_N: tl.constexpr,       # K-axis tile size
-    BLOCK_D: tl.constexpr,       # hidden_dim-axis tile size
-    GROUP_N: tl.constexpr,       # K-axis tile group count
-    FP32_MODE: tl.constexpr,     # True if input is fp32
-    ALLOW_TF32: tl.constexpr,    # True to allow tf32 tensorcore
-    CAST_DTYPE: tl.constexpr,    # Casting method before passing to tl.dot
-                                 #   0: tf32 (inline asm to round fp32 to tf32)
-                                 #   1: bf16 (cast grad_s to bf16, k_tile already bf16)
-                                 #   2: fp16
-    LOSS_TYPE: tl.constexpr,     # 0=multi(MP-NCE), 1=soft(Soft CE), 2=cross(Cross CE)
-                                 # grad_s (gradient w.r.t. score) formula differs per loss type
+    BLOCK_M: tl.constexpr,  # Q-axis tile size (16/32/64)
+    BLOCK_N: tl.constexpr,  # K-axis tile size
+    BLOCK_D: tl.constexpr,  # hidden_dim-axis tile size
+    GROUP_N: tl.constexpr,  # K-axis tile group count
+    FP32_MODE: tl.constexpr,  # True if input is fp32
+    ALLOW_TF32: tl.constexpr,  # True to allow tf32 tensorcore
+    CAST_DTYPE: tl.constexpr,  # Casting method before passing to tl.dot
+    #   0: tf32 (inline asm to round fp32 to tf32)
+    #   1: bf16 (cast grad_s to bf16, k_tile already bf16)
+    #   2: fp16
+    LOSS_TYPE: tl.constexpr,  # 0=multi(MP-NCE), 1=soft(Soft CE), 2=cross(Cross CE)
+    # grad_s (gradient w.r.t. score) formula differs per loss type
     INT64_LABELS: tl.constexpr,  # True for int64 label pointer arithmetic (Q*K > 2^31)
 ):
     """
@@ -416,10 +437,14 @@ def _dq_bwd_kernel(
 
         # [Load labels tile] (same pattern as forward kernel)
         if INT64_LABELS:
-            label_ptrs = Labels + offs_m[:, None].to(tl.int64) * stride_l_m + cur_offs_n[None, :].to(tl.int64) * stride_l_n
+            label_ptrs = (
+                Labels + offs_m[:, None].to(tl.int64) * stride_l_m + cur_offs_n[None, :].to(tl.int64) * stride_l_n
+            )
         else:
             label_ptrs = Labels + offs_m[:, None] * stride_l_m + cur_offs_n[None, :] * stride_l_n
-        labels_tile = tl.load(label_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_n[None, :] < num_docs), other=-1)
+        labels_tile = tl.load(
+            label_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_n[None, :] < num_docs), other=-1
+        )
 
         # [Recompute Q@K^T score tile] Same code as forward kernel to recompute scores
         # Core of fused approach: no stored score matrix, so must recompute in backward
@@ -428,8 +453,12 @@ def _dq_bwd_kernel(
             cur_offs_d = start_d + offs_d
             q_ptrs = Q + offs_m[:, None] * stride_q_m + cur_offs_d[None, :] * stride_q_d
             k_ptrs = K + cur_offs_n[:, None] * stride_k_n + cur_offs_d[None, :] * stride_k_d
-            q_tile = tl.load(q_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
-            k_tile = tl.load(k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
+            q_tile = tl.load(
+                q_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
+            k_tile = tl.load(
+                k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
             if FP32_MODE and not ALLOW_TF32:
                 qk += tl.dot(q_tile, tl.trans(k_tile), input_precision="ieee")
             else:
@@ -449,12 +478,12 @@ def _dq_bwd_kernel(
             #   grad = w * (sigmoid(score - neg_lse) - 1)
             #   sigmoid near 1 -> grad ~ 0 (well-classified positive)
             #   sigmoid near 0 -> grad ~ -w (misclassified positive, large gradient)
-            pos_mask = (labels_tile > 0)
+            pos_mask = labels_tile > 0
             # negative pair (label == 0):
             #   grad = w * exp(score - neg_lse) * sum_weights
             #   exp(score - neg_lse) = softmax-like weight
             #   sum_weights = sum of sigmoid(pos_score - neg_lse) for all pos pairs
-            neg_mask = (labels_tile == 0)
+            neg_mask = labels_tile == 0
             # Non-neg positions set to -inf so exp=0
             exp_neg = tl.exp(tl.where(neg_mask, scores_minus, float("-inf")))
             neg_grad = w[:, None] * exp_neg * aux[:, None]
@@ -469,7 +498,7 @@ def _dq_bwd_kernel(
             #   grad = w * (softmax(score) - normalized_label)
             #   softmax(score) = exp(score - all_lse)
             #   normalized_label = label / sum(labels)
-            valid_mask = (labels_tile >= 0)
+            valid_mask = labels_tile >= 0
             softmax_val = tl.exp(tl.where(valid_mask, scores_minus, float("-inf")))
             # Convert label to float. Clamp -1 (ignore) to 0
             label_float = tl.maximum(labels_tile.to(tl.float32), 0.0)
@@ -483,7 +512,7 @@ def _dq_bwd_kernel(
             # [Cross CE loss gradient]
             # valid pair (label >= 0):
             #   grad = w * (label_sum * softmax(score) - label)
-            valid_mask = (labels_tile >= 0)
+            valid_mask = labels_tile >= 0
             softmax_val = tl.exp(tl.where(valid_mask, scores_minus, float("-inf")))
             label_float = tl.maximum(labels_tile.to(tl.float32), 0.0)
             grad_s = w[:, None] * (aux[:, None] * softmax_val - label_float)
@@ -503,7 +532,9 @@ def _dq_bwd_kernel(
             cur_offs_d = start_d + offs_d
             # Load current doc block x dim block slice from K
             k_ptrs = K + cur_offs_n[:, None] * stride_k_n + cur_offs_d[None, :] * stride_k_d
-            k_tile = tl.load(k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
+            k_tile = tl.load(
+                k_ptrs, mask=(cur_offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
 
             # [Dtype casting for tensor cores]
             # tl.dot does not support direct fp32 x fp32 (not a tensor core format)
@@ -529,41 +560,51 @@ def _dq_bwd_kernel(
             # so we load current dQ value, add the contribution, and store back.
             # Not atomic -- only this CTA writes to these dQ positions, no race condition
             dq_ptrs = dQ + offs_m[:, None] * stride_q_m + cur_offs_d[None, :] * stride_q_d
-            dq_prev = tl.load(dq_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
-            tl.store(dq_ptrs, dq_prev + dq_contrib, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim))
+            dq_prev = tl.load(
+                dq_ptrs, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
+            tl.store(
+                dq_ptrs, dq_prev + dq_contrib, mask=(offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim)
+            )
 
 
 # =============================================================================
 # Backward: dK kernel (LOSS_TYPE branching)
 # =============================================================================
 
+
 @triton.autotune(configs=_bwd_dk_configs(), key=["hidden_dim"], reset_to_zero=["dK"])
 @triton.jit
 def _dk_bwd_kernel(
     # Tensor pointers
-    Q,                           # [num_queries, hidden_dim] query embeddings
-    K,                           # [num_docs, hidden_dim] document embeddings
-    Labels,                      # [num_queries, num_docs] int8 label matrix
-    dK,                          # [num_docs, hidden_dim] output: document gradient (accumulated in fp32)
-    RefLSE,                      # [num_queries] logsumexp from forward (same as dQ kernel)
-    Aux,                         # [num_queries] per-loss auxiliary value (same as dQ kernel)
-    W,                           # [num_queries] per-query loss weight
+    Q,  # [num_queries, hidden_dim] query embeddings
+    K,  # [num_docs, hidden_dim] document embeddings
+    Labels,  # [num_queries, num_docs] int8 label matrix
+    dK,  # [num_docs, hidden_dim] output: document gradient (accumulated in fp32)
+    RefLSE,  # [num_queries] logsumexp from forward (same as dQ kernel)
+    Aux,  # [num_queries] per-loss auxiliary value (same as dQ kernel)
+    W,  # [num_queries] per-query loss weight
     # Dimension info
-    num_queries, num_docs, hidden_dim,
+    num_queries,
+    num_docs,
+    hidden_dim,
     # stride
-    stride_q_m, stride_q_d,      # Q (row, col) stride
-    stride_k_n, stride_k_d,      # K, dK (row, col) stride
-    stride_l_m, stride_l_n,      # Labels (row, col) stride
+    stride_q_m,
+    stride_q_d,  # Q (row, col) stride
+    stride_k_n,
+    stride_k_d,  # K, dK (row, col) stride
+    stride_l_m,
+    stride_l_n,  # Labels (row, col) stride
     # tl.constexpr
-    BLOCK_M: tl.constexpr,       # Q-axis tile size. Number of queries seen per inner loop iteration
-    BLOCK_N: tl.constexpr,       # K-axis tile size. Number of documents processed by one CTA
-    BLOCK_D: tl.constexpr,       # hidden_dim-axis tile size
-    GROUP_M: tl.constexpr,       # Q-axis tile group count (symmetric to GROUP_N in dQ)
-                                 # GROUP_M=2 processes BLOCK_M*2 queries per loop iteration
-    FP32_MODE: tl.constexpr,     # True if input is fp32
-    ALLOW_TF32: tl.constexpr,    # True to allow tf32 tensorcore
-    CAST_DTYPE: tl.constexpr,    # 0=tf32(asm), 1=bf16, 2=fp16
-    LOSS_TYPE: tl.constexpr,     # 0=multi, 1=soft, 2=cross
+    BLOCK_M: tl.constexpr,  # Q-axis tile size. Number of queries seen per inner loop iteration
+    BLOCK_N: tl.constexpr,  # K-axis tile size. Number of documents processed by one CTA
+    BLOCK_D: tl.constexpr,  # hidden_dim-axis tile size
+    GROUP_M: tl.constexpr,  # Q-axis tile group count (symmetric to GROUP_N in dQ)
+    # GROUP_M=2 processes BLOCK_M*2 queries per loop iteration
+    FP32_MODE: tl.constexpr,  # True if input is fp32
+    ALLOW_TF32: tl.constexpr,  # True to allow tf32 tensorcore
+    CAST_DTYPE: tl.constexpr,  # 0=tf32(asm), 1=bf16, 2=fp16
+    LOSS_TYPE: tl.constexpr,  # 0=multi, 1=soft, 2=cross
     INT64_LABELS: tl.constexpr,  # True for int64 label pointer (Q*K > 2^31)
 ):
     """
@@ -612,10 +653,14 @@ def _dk_bwd_kernel(
 
         # [Load labels tile] (same as dQ kernel, indices are cur_offs_m/offs_n)
         if INT64_LABELS:
-            label_ptrs = Labels + cur_offs_m[:, None].to(tl.int64) * stride_l_m + offs_n[None, :].to(tl.int64) * stride_l_n
+            label_ptrs = (
+                Labels + cur_offs_m[:, None].to(tl.int64) * stride_l_m + offs_n[None, :].to(tl.int64) * stride_l_n
+            )
         else:
             label_ptrs = Labels + cur_offs_m[:, None] * stride_l_m + offs_n[None, :] * stride_l_n
-        labels_tile = tl.load(label_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (offs_n[None, :] < num_docs), other=-1)
+        labels_tile = tl.load(
+            label_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (offs_n[None, :] < num_docs), other=-1
+        )
 
         # [Recompute Q@K^T score tile] Same as forward/dQ
         qk = tl.zeros([BLOCK_MG, BLOCK_N], dtype=tl.float32)
@@ -623,7 +668,9 @@ def _dk_bwd_kernel(
             cur_offs_d = start_d + offs_d
             q_ptrs = Q + cur_offs_m[:, None] * stride_q_m + cur_offs_d[None, :] * stride_q_d
             k_ptrs = K + offs_n[:, None] * stride_k_n + cur_offs_d[None, :] * stride_k_d
-            q_tile = tl.load(q_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
+            q_tile = tl.load(
+                q_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
             k_tile = tl.load(k_ptrs, mask=(offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
             if FP32_MODE and not ALLOW_TF32:
                 qk += tl.dot(q_tile, tl.trans(k_tile), input_precision="ieee")
@@ -636,8 +683,8 @@ def _dk_bwd_kernel(
 
         if LOSS_TYPE == 0:
             # MP-NCE (see dQ kernel comments for details)
-            pos_mask = (labels_tile > 0)
-            neg_mask = (labels_tile == 0)
+            pos_mask = labels_tile > 0
+            neg_mask = labels_tile == 0
             exp_neg = tl.exp(tl.where(neg_mask, scores_minus, float("-inf")))
             neg_grad = w[:, None] * exp_neg * aux[:, None]
             sig_pos = tl.sigmoid(tl.where(pos_mask, scores_minus, 0.0))
@@ -645,7 +692,7 @@ def _dk_bwd_kernel(
             grad_s = tl.where(pos_mask, pos_grad, tl.where(neg_mask, neg_grad, 0.0))
         elif LOSS_TYPE == 1:
             # Soft CE (see dQ kernel comments for details)
-            valid_mask = (labels_tile >= 0)
+            valid_mask = labels_tile >= 0
             softmax_val = tl.exp(tl.where(valid_mask, scores_minus, float("-inf")))
             label_float = tl.maximum(labels_tile.to(tl.float32), 0.0)
             safe_aux = tl.where(aux > 0, aux, 1.0)
@@ -654,7 +701,7 @@ def _dk_bwd_kernel(
             grad_s = tl.where(valid_mask, grad_s, 0.0)
         else:
             # Cross CE (see dQ kernel comments for details)
-            valid_mask = (labels_tile >= 0)
+            valid_mask = labels_tile >= 0
             softmax_val = tl.exp(tl.where(valid_mask, scores_minus, float("-inf")))
             label_float = tl.maximum(labels_tile.to(tl.float32), 0.0)
             grad_s = w[:, None] * (aux[:, None] * softmax_val - label_float)
@@ -674,7 +721,9 @@ def _dk_bwd_kernel(
             cur_offs_d = start_d + offs_d
             # Load current query block x dim block slice from Q
             q_ptrs = Q + cur_offs_m[:, None] * stride_q_m + cur_offs_d[None, :] * stride_q_d
-            q_tile = tl.load(q_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
+            q_tile = tl.load(
+                q_ptrs, mask=(cur_offs_m[:, None] < num_queries) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
 
             # Tensor core dtype casting (same pattern as dQ kernel)
             if CAST_DTYPE == 0:
@@ -693,13 +742,18 @@ def _dk_bwd_kernel(
             # Load-add-store pattern to accumulate into dK.
             # Only this CTA writes to this doc block, so no race condition
             dk_ptrs = dK + offs_n[:, None] * stride_k_n + cur_offs_d[None, :] * stride_k_d
-            dk_prev = tl.load(dk_ptrs, mask=(offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0)
-            tl.store(dk_ptrs, dk_prev + dk_contrib, mask=(offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim))
+            dk_prev = tl.load(
+                dk_ptrs, mask=(offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim), other=0.0
+            )
+            tl.store(
+                dk_ptrs, dk_prev + dk_contrib, mask=(offs_n[:, None] < num_docs) & (cur_offs_d[None, :] < hidden_dim)
+            )
 
 
 # =============================================================================
 # Python Helpers
 # =============================================================================
+
 
 def _get_dtype_params(dtype):
     """
@@ -713,11 +767,11 @@ def _get_dtype_params(dtype):
                     2 = fp16 (cast grad_s to fp16)
     """
     if dtype == torch.float32:
-        return True, 0   # FP32_MODE=True, CAST_DTYPE=tf32
+        return True, 0  # FP32_MODE=True, CAST_DTYPE=tf32
     elif dtype == torch.bfloat16:
-        return False, 1   # FP32_MODE=False, CAST_DTYPE=bf16
+        return False, 1  # FP32_MODE=False, CAST_DTYPE=bf16
     else:
-        return False, 2   # FP32_MODE=False, CAST_DTYPE=fp16
+        return False, 2  # FP32_MODE=False, CAST_DTYPE=fp16
 
 
 def _select_group_n(num_docs):
@@ -733,6 +787,7 @@ def _select_group_m(num_queries):
 # =============================================================================
 # Python Wrappers for Triton Kernels
 # =============================================================================
+
 
 def _lse_forward(q_scaled, k, labels, lse_mode, allow_tf32=False):
     """
@@ -777,15 +832,24 @@ def _lse_forward(q_scaled, k, labels, lse_mode, allow_tf32=False):
     # autotune determines BLOCK_M, so use lambda for deferred computation
     grid = lambda META: (triton.cdiv(num_queries, META["BLOCK_M"]),)
     _lse_fwd_kernel[grid](
-        q_cont, k_cont, labels_cont, out_lse,
-        num_queries, num_docs, hidden_dim,
+        q_cont,
+        k_cont,
+        labels_cont,
+        out_lse,
+        num_queries,
+        num_docs,
+        hidden_dim,
         q_bucket,
         # .stride(0)/.stride(1): automatically pass the PyTorch tensor's row/col stride
-        q_cont.stride(0), q_cont.stride(1),
-        k_cont.stride(0), k_cont.stride(1),
-        labels_cont.stride(0), labels_cont.stride(1),
+        q_cont.stride(0),
+        q_cont.stride(1),
+        k_cont.stride(0),
+        k_cont.stride(1),
+        labels_cont.stride(0),
+        labels_cont.stride(1),
         GROUP_N=_select_group_n(num_docs),
-        FP32_MODE=fp32_mode, ALLOW_TF32=allow_tf32,
+        FP32_MODE=fp32_mode,
+        ALLOW_TF32=allow_tf32,
         LSE_MODE=lse_mode,
         INT64_LABELS=int64_labels,
     )
@@ -848,16 +912,28 @@ def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=Fa
     # dQ kernel: grid = ceil(Q / BLOCK_M). Each CTA computes gradient for BLOCK_M queries
     grid_q = lambda META: (triton.cdiv(num_queries, META["BLOCK_M"]),)
     _dq_bwd_kernel[grid_q](
-        q_cont, k_cont, labels_cont, dq,
-        ref_lse_c, aux_c, w_c,
-        num_queries, num_docs, hidden_dim,
+        q_cont,
+        k_cont,
+        labels_cont,
+        dq,
+        ref_lse_c,
+        aux_c,
+        w_c,
+        num_queries,
+        num_docs,
+        hidden_dim,
         q_bucket,
-        q_cont.stride(0), q_cont.stride(1),
-        k_cont.stride(0), k_cont.stride(1),
-        labels_cont.stride(0), labels_cont.stride(1),
+        q_cont.stride(0),
+        q_cont.stride(1),
+        k_cont.stride(0),
+        k_cont.stride(1),
+        labels_cont.stride(0),
+        labels_cont.stride(1),
         GROUP_N=_select_group_n(num_docs),
-        FP32_MODE=fp32_mode, ALLOW_TF32=allow_tf32,
-        CAST_DTYPE=cast_dtype, LOSS_TYPE=loss_type_int,
+        FP32_MODE=fp32_mode,
+        ALLOW_TF32=allow_tf32,
+        CAST_DTYPE=cast_dtype,
+        LOSS_TYPE=loss_type_int,
         INT64_LABELS=int64_labels,
     )
 
@@ -865,15 +941,27 @@ def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=Fa
     # dK kernel doesn't need q_bucket (parallelized along K axis, Q size doesn't affect autotune key)
     grid_k = lambda META: (triton.cdiv(num_docs, META["BLOCK_N"]),)
     _dk_bwd_kernel[grid_k](
-        q_cont, k_cont, labels_cont, dk,
-        ref_lse_c, aux_c, w_c,
-        num_queries, num_docs, hidden_dim,
-        q_cont.stride(0), q_cont.stride(1),
-        k_cont.stride(0), k_cont.stride(1),
-        labels_cont.stride(0), labels_cont.stride(1),
+        q_cont,
+        k_cont,
+        labels_cont,
+        dk,
+        ref_lse_c,
+        aux_c,
+        w_c,
+        num_queries,
+        num_docs,
+        hidden_dim,
+        q_cont.stride(0),
+        q_cont.stride(1),
+        k_cont.stride(0),
+        k_cont.stride(1),
+        labels_cont.stride(0),
+        labels_cont.stride(1),
         GROUP_M=_select_group_m(num_queries),
-        FP32_MODE=fp32_mode, ALLOW_TF32=allow_tf32,
-        CAST_DTYPE=cast_dtype, LOSS_TYPE=loss_type_int,
+        FP32_MODE=fp32_mode,
+        ALLOW_TF32=allow_tf32,
+        CAST_DTYPE=cast_dtype,
+        LOSS_TYPE=loss_type_int,
         INT64_LABELS=int64_labels,
     )
 
@@ -883,6 +971,7 @@ def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=Fa
 # =============================================================================
 # Positive Pair Helpers
 # =============================================================================
+
 
 def _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts):
     """
@@ -954,6 +1043,7 @@ def _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg
 # Autograd Function
 # =============================================================================
 
+
 class FusedDenseLoss(torch.autograd.Function):
     """
     Fused Dense Loss implemented as a PyTorch autograd Function.
@@ -966,19 +1056,20 @@ class FusedDenseLoss(torch.autograd.Function):
     ctx: context object for passing tensors from forward to backward.
          Use save_for_backward() to save, and saved_tensors to retrieve in backward.
     """
+
     @staticmethod
     def forward(
         ctx,
-        q_scaled: Tensor,      # [Q, D] scale-multiplied query
-        k: Tensor,              # [K, D] document
-        labels: Tensor,         # [Q, K] int8 label
-        loss_type_int: int,     # 0=multi, 1=soft, 2=cross
-        allow_tf32: bool,       # whether to allow tf32
-        pos_qi: Tensor,         # [P] positive pair query indices
-        pos_di: Tensor,         # [P] positive pair document indices
-        num_pos: Tensor,        # [Q] per-query positive count
-        has_neg: Tensor,        # [Q] bool, negative existence
-        pos_scores: Tensor,     # [P] positive pair scores (pre-computed in Python)
+        q_scaled: Tensor,  # [Q, D] scale-multiplied query
+        k: Tensor,  # [K, D] document
+        labels: Tensor,  # [Q, K] int8 label
+        loss_type_int: int,  # 0=multi, 1=soft, 2=cross
+        allow_tf32: bool,  # whether to allow tf32
+        pos_qi: Tensor,  # [P] positive pair query indices
+        pos_di: Tensor,  # [P] positive pair document indices
+        num_pos: Tensor,  # [Q] per-query positive count
+        has_neg: Tensor,  # [Q] bool, negative existence
+        pos_scores: Tensor,  # [P] positive pair scores (pre-computed in Python)
         pos_label_values: Tensor,  # [P] positive pair label values
     ):
         """
@@ -1110,7 +1201,12 @@ class FusedDenseLoss(torch.autograd.Function):
 
         # Launch Triton dQ/dK kernels (computed in fp32)
         dq_scaled, dk = _backward(
-            q_scaled, k, labels, ref_lse, aux, w,
+            q_scaled,
+            k,
+            labels,
+            ref_lse,
+            aux,
+            w,
             loss_type_int=ctx.loss_type_int,
             allow_tf32=ctx.allow_tf32,
         )
@@ -1126,6 +1222,7 @@ class FusedDenseLoss(torch.autograd.Function):
 # =============================================================================
 # Public API
 # =============================================================================
+
 
 def fused_dense_loss(
     q: Tensor,
@@ -1172,13 +1269,22 @@ def fused_dense_loss(
     q_scaled = q * scale
 
     # Prepare positive pair info (indices, scores, label values)
-    pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values = (
-        _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts)
+    pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values = _resolve_positive_pairs(
+        q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts
     )
 
     # Launch via FusedDenseLoss.apply() to use the autograd Function
     # .apply() calls forward, and .backward() triggers backward
     return FusedDenseLoss.apply(
-        q_scaled, k, labels, loss_type_int, allow_tf32,
-        pos_qi, pos_di, num_pos, has_neg, pos_scores, pos_label_values,
+        q_scaled,
+        k,
+        labels,
+        loss_type_int,
+        allow_tf32,
+        pos_qi,
+        pos_di,
+        num_pos,
+        has_neg,
+        pos_scores,
+        pos_label_values,
     )

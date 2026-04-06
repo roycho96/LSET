@@ -6,14 +6,20 @@ import time
 class TrainLogger:
     """Simple training logger supporting console + optional wandb."""
 
-    def __init__(self, use_wandb: bool = False, project: str | None = None,
-                 run_name: str | None = None, config: dict | None = None):
+    def __init__(
+        self,
+        use_wandb: bool = False,
+        project: str | None = None,
+        run_name: str | None = None,
+        config: dict | None = None,
+    ):
         self.use_wandb = use_wandb
         self._step_start_time = time.time()
         self._total_samples = 0
 
         if use_wandb:
             import wandb
+
             wandb.init(project=project, name=run_name, config=config)
 
     def log(self, metrics: dict, step: int):
@@ -28,6 +34,7 @@ class TrainLogger:
 
         if self.use_wandb:
             import wandb
+
             wandb.log(metrics, step=step)
 
     def update_throughput(self, num_samples: int) -> dict:
@@ -42,4 +49,5 @@ class TrainLogger:
     def finish(self):
         if self.use_wandb:
             import wandb
+
             wandb.finish()

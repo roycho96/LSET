@@ -12,9 +12,10 @@ def device():
 
 
 class TestAttnBackend:
-
     def test_backend_setting(self):
-        from lset.models.decoder.qwen3.attention import set_attn_backend, get_attn_backend
+        from lset.models.decoder.qwen3.attention import get_attn_backend
+        from lset.models.decoder.qwen3.attention import set_attn_backend
+
         set_attn_backend("flash_attn")
         assert get_attn_backend() == "flash_attn"
         set_attn_backend("varlen_attn")
@@ -26,14 +27,16 @@ class TestAttnBackend:
 
     def test_invalid_backend_raises(self):
         from lset.models.decoder.qwen3.attention import set_attn_backend
+
         with pytest.raises(AssertionError):
             set_attn_backend("invalid")
 
     def test_all_backends_match(self, device):
         """flash_attn, varlen_attn, and SDPA produce similar outputs."""
-        from lset.models.decoder.qwen3.attention import (
-            _try_flash_attn, _try_varlen_attn, _sdpa_packed_fallback,
-        )
+        from lset.models.decoder.qwen3.attention import _sdpa_packed_fallback
+        from lset.models.decoder.qwen3.attention import _try_flash_attn
+        from lset.models.decoder.qwen3.attention import _try_varlen_attn
+
         T, H, D = 128, 8, 64
         q = torch.randn(T, H, D, device=device, dtype=torch.bfloat16)
         k = torch.randn(T, H, D, device=device, dtype=torch.bfloat16)
@@ -92,6 +95,7 @@ class TestAttnBackend:
     def test_bidirectional_varlen(self, device):
         """varlen_attn with causal=False (bidirectional) works."""
         from lset.models.decoder.qwen3.attention import _try_varlen_attn
+
         T, H, D = 64, 4, 32
         q = torch.randn(T, H, D, device=device, dtype=torch.bfloat16)
         k = torch.randn(T, H, D, device=device, dtype=torch.bfloat16)
@@ -106,6 +110,7 @@ class TestAttnBackend:
     def test_cpu_fallback_to_sdpa(self):
         """CPU mode falls back to SDPA (no flash_attn/varlen_attn)."""
         from lset.models.decoder.qwen3.attention import _flash_or_sdpa_packed
+
         T, H, D = 32, 4, 16
         q = torch.randn(T, H, D, dtype=torch.float32)
         k = torch.randn(T, H, D, dtype=torch.float32)

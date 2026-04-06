@@ -1,6 +1,7 @@
 """Collators for embedding training — padded and packed modes."""
 
 import torch
+
 from lset.train.data.packing import pack_sequences
 
 
@@ -100,8 +101,7 @@ class EmbeddingCollator:
     }
     """
 
-    def __init__(self, tokenizer, max_length: int = 512, packed: bool = False,
-                 length_sorted: bool = False):
+    def __init__(self, tokenizer, max_length: int = 512, packed: bool = False, length_sorted: bool = False):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.packed = packed
@@ -109,7 +109,7 @@ class EmbeddingCollator:
 
     def _tokenize(self, text: str) -> dict:
         encoding = self.tokenizer.encode(text)
-        ids = encoding.ids[:self.max_length]
+        ids = encoding.ids[: self.max_length]
         mask = [1] * len(ids)
         return {"input_ids": ids, "attention_mask": mask}
 
@@ -164,8 +164,7 @@ class EmbeddingCollator:
                     all_doc_tokens.append(self._tokenize(text))
                 for text in sample.get("negatives", []):
                     all_doc_tokens.append(self._tokenize(text))
-                doc_offsets.append((start, len(sample["positives"]),
-                                   len(sample.get("negatives", []))))
+                doc_offsets.append((start, len(sample["positives"]), len(sample.get("negatives", []))))
 
         num_docs = len(all_doc_tokens)
 
@@ -178,8 +177,7 @@ class EmbeddingCollator:
         for i, sample in enumerate(batch):
             count = 0
             if has_scores:
-                num_d = len(sample.get("all_documents",
-                            sample["positives"] + sample.get("negatives", [])))
+                num_d = len(sample.get("all_documents", sample["positives"] + sample.get("negatives", [])))
                 scores = sample["scores"]
                 for j, score in enumerate(scores):
                     if score > 0:
@@ -238,8 +236,8 @@ class FixedLengthCollator:
         padded_ids = []
         padded_mask = []
         for s in sequences:
-            ids = s["input_ids"][:self.max_seq_length]
-            mask = s["attention_mask"][:self.max_seq_length]
+            ids = s["input_ids"][: self.max_seq_length]
+            mask = s["attention_mask"][: self.max_seq_length]
             pad_len = self.max_seq_length - len(ids)
             padded_ids.append([self.pad_token_id] * pad_len + ids)
             padded_mask.append([0] * pad_len + mask)

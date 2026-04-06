@@ -19,9 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lset.models.encoder.bert.config import BertConfig
 from lset.kernels import layer_norm as _fused_layer_norm
 from lset.kernels import residual_layer_norm as _residual_layer_norm
+from lset.models.encoder.bert.config import BertConfig
 
 
 class BertEmbeddings(nn.Module):
@@ -50,7 +50,9 @@ class BertEmbeddings(nn.Module):
             + self.token_type_embeddings(token_type_ids)
         )
         return _fused_layer_norm(
-            embeddings, self.LayerNorm.weight, self.LayerNorm.bias,
+            embeddings,
+            self.LayerNorm.weight,
+            self.LayerNorm.bias,
             self.LayerNorm.eps,
         )
 
@@ -96,8 +98,11 @@ class BertAttention(nn.Module):
 
         # Post-norm: fused residual + LayerNorm
         normed, _ = _residual_layer_norm(
-            hidden_states, self.dense(attn_out),
-            self.LayerNorm.weight, self.LayerNorm.bias, self.layer_norm_eps,
+            hidden_states,
+            self.dense(attn_out),
+            self.LayerNorm.weight,
+            self.LayerNorm.bias,
+            self.layer_norm_eps,
         )
         return normed
 
@@ -116,8 +121,11 @@ class BertMLP(nn.Module):
         hidden_states = self.dense_out(hidden_states)
         # Post-norm: fused residual + LayerNorm
         normed, _ = _residual_layer_norm(
-            residual, hidden_states,
-            self.LayerNorm.weight, self.LayerNorm.bias, self.layer_norm_eps,
+            residual,
+            hidden_states,
+            self.LayerNorm.weight,
+            self.LayerNorm.bias,
+            self.layer_norm_eps,
         )
         return normed
 
@@ -144,10 +152,9 @@ class BertEncoder(nn.Module):
         self.config = config
         self.fused_projections = fused_projections
         self.embeddings = BertEmbeddings(config)
-        self.layers = nn.ModuleList([
-            BertBlock(config, fused_qkv=fused_projections)
-            for _ in range(config.num_hidden_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [BertBlock(config, fused_qkv=fused_projections) for _ in range(config.num_hidden_layers)]
+        )
 
     def forward(
         self,
@@ -172,7 +179,9 @@ class BertEncoder(nn.Module):
     ) -> dict[str, torch.Tensor]:
         return self(
             input_ids,
-            position_ids=position_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+            position_ids=position_ids,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
         )
 
     def _forward_padded(
@@ -213,12 +222,11 @@ class BertEncoder(nn.Module):
         # Compute embeddings per-token (no batch dimension)
         word_emb = self.embeddings.word_embeddings(input_ids)
         pos_emb = self.embeddings.position_embeddings(position_ids + self.embeddings.position_offset)
-        type_emb = self.embeddings.token_type_embeddings(
-            torch.zeros(T, dtype=torch.long, device=input_ids.device)
-        )
+        type_emb = self.embeddings.token_type_embeddings(torch.zeros(T, dtype=torch.long, device=input_ids.device))
         hidden_states = _fused_layer_norm(
             word_emb + pos_emb + type_emb,
-            self.embeddings.LayerNorm.weight, self.embeddings.LayerNorm.bias,
+            self.embeddings.LayerNorm.weight,
+            self.embeddings.LayerNorm.bias,
             self.embeddings.LayerNorm.eps,
         )
 
@@ -228,12 +236,14 @@ class BertEncoder(nn.Module):
         if use_varlen:
             for layer in self.layers:
                 hidden_states = self._forward_packed_layer_varlen(
-                    layer, hidden_states, cu_seqlens, max_seqlen,
+                    layer,
+                    hidden_states,
+                    cu_seqlens,
+                    max_seqlen,
                 )
         else:
             # Fallback: O(T^2) block-diagonal mask
-            mask = torch.full((T, T), float("-inf"), dtype=hidden_states.dtype,
-                              device=hidden_states.device)
+            mask = torch.full((T, T), float("-inf"), dtype=hidden_states.dtype, device=hidden_states.device)
             for i in range(cu_seqlens.shape[0] - 1):
                 s = int(cu_seqlens[i])
                 e = int(cu_seqlens[i + 1])
@@ -256,11 +266,13 @@ class BertEncoder(nn.Module):
             return False
         try:
             from flash_attn import flash_attn_varlen_func  # noqa: F401
+
             return True
         except ImportError:
             pass
         try:
             from torch.nn.attention.varlen import varlen_attn  # noqa: F401
+
             return True
         except ImportError:
             pass
@@ -294,8 +306,15 @@ class BertEncoder(nn.Module):
         attn_out = None
         try:
             from flash_attn import flash_attn_varlen_func
+
             attn_out = flash_attn_varlen_func(
-                q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
+                q,
+                k,
+                v,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
                 causal=False,
             )
         except ImportError:
@@ -303,16 +322,26 @@ class BertEncoder(nn.Module):
 
         if attn_out is None:
             from torch.nn.attention.varlen import varlen_attn
+
             attn_out = varlen_attn(
-                q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
+                q,
+                k,
+                v,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
                 window_size=(-1, -1),  # bidirectional
             )
 
         attn_out = attn_out.reshape(T, -1)
         # Post-norm: fused residual + LayerNorm
         hidden_states, _ = _residual_layer_norm(
-            hidden_states, attn.dense(attn_out),
-            attn.LayerNorm.weight, attn.LayerNorm.bias, attn.layer_norm_eps,
+            hidden_states,
+            attn.dense(attn_out),
+            attn.LayerNorm.weight,
+            attn.LayerNorm.bias,
+            attn.layer_norm_eps,
         )
 
         # MLP with post-norm (uses fused residual layer norm internally)

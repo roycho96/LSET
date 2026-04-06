@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.kernels import swiglu
+from lset.models.decoder.qwen3.config import Qwen3Config
 
 
 class Qwen3MLP(nn.Module):

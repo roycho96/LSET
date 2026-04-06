@@ -20,9 +20,14 @@ def test_config_from_hf_json():
 
 def test_forward_shape():
     config = LlamaConfig(
-        vocab_size=1000, hidden_size=128, intermediate_size=256,
-        num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
-        head_dim=32, max_position_embeddings=512,
+        vocab_size=1000,
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=32,
+        max_position_embeddings=512,
     )
     model = LlamaDecoder(config)
     x = torch.randint(0, 1000, (2, 16))
@@ -34,9 +39,14 @@ def test_forward_shape():
 def test_bidirectional_attention():
     """Llama-Nemotron uses bidirectional attention — no causal mask."""
     config = LlamaConfig(
-        vocab_size=1000, hidden_size=64, intermediate_size=128,
-        num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2,
-        head_dim=32, max_position_embeddings=64,
+        vocab_size=1000,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        head_dim=32,
+        max_position_embeddings=64,
     )
     model = LlamaDecoder(config)
     # Without mask, should NOT apply causal masking

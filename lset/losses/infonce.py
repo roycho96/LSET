@@ -4,9 +4,9 @@ import torch
 import torch.nn.functional as F
 
 
-def infonce_loss(query_embeds: torch.Tensor, doc_embeds: torch.Tensor,
-                 temperature: float = 0.02,
-                 top_k: int | None = None) -> torch.Tensor:
+def infonce_loss(
+    query_embeds: torch.Tensor, doc_embeds: torch.Tensor, temperature: float = 0.02, top_k: int | None = None
+) -> torch.Tensor:
     """Compute InfoNCE loss for contrastive learning.
 
     Positives are along the diagonal (query[i] matches doc[i]).
@@ -31,11 +31,11 @@ def infonce_loss(query_embeds: torch.Tensor, doc_embeds: torch.Tensor,
 
     if top_k and 0 < top_k < B - 1:
         # Truncated InfoNCE: softmax over {positive} ∪ {top-K negatives}
-        pos_sim = sim.diagonal().unsqueeze(1)              # (B, 1)
+        pos_sim = sim.diagonal().unsqueeze(1)  # (B, 1)
         sim_masked = sim.clone()
         sim_masked.fill_diagonal_(float("-inf"))
-        topk_sims, _ = sim_masked.topk(top_k, dim=1)      # (B, K)
-        logits = torch.cat([pos_sim, topk_sims], dim=1)    # (B, K+1)
+        topk_sims, _ = sim_masked.topk(top_k, dim=1)  # (B, K)
+        logits = torch.cat([pos_sim, topk_sims], dim=1)  # (B, K+1)
         labels = torch.zeros(B, dtype=torch.long, device=sim.device)
         return F.cross_entropy(logits, labels)
 

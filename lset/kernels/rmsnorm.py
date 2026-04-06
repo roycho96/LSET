@@ -19,12 +19,13 @@ this eliminates ~560 kernel launches per forward pass.
 import torch
 import triton
 import triton.language as tl
-from torch import Tensor
 
+from torch import Tensor
 
 # =============================================================================
 # Forward Kernel
 # =============================================================================
+
 
 @triton.autotune(
     configs=[
@@ -37,14 +38,14 @@ from torch import Tensor
 )
 @triton.jit
 def _rms_norm_fwd_kernel(
-    X,          # [N, D] input
-    Y,          # [N, D] output (normalized, WITHOUT weight scaling)
-    Rstd,       # [N] reciprocal std (1/rms) for backward
-    N,          # number of rows
-    D,          # number of columns
-    stride_x,   # X row stride
-    stride_y,   # Y row stride
-    eps,        # epsilon
+    X,  # [N, D] input
+    Y,  # [N, D] output (normalized, WITHOUT weight scaling)
+    Rstd,  # [N] reciprocal std (1/rms) for backward
+    N,  # number of rows
+    D,  # number of columns
+    stride_x,  # X row stride
+    stride_y,  # Y row stride
+    eps,  # epsilon
     BLOCK_D: tl.constexpr,
 ):
     row = tl.program_id(0)
@@ -83,6 +84,7 @@ def _rms_norm_fwd_kernel(
 # Backward Kernels
 # =============================================================================
 
+
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
@@ -94,12 +96,15 @@ def _rms_norm_fwd_kernel(
 )
 @triton.jit
 def _rms_norm_bwd_kernel(
-    GradY,      # [N, D] upstream gradient (already includes weight effect)
-    X,          # [N, D] input
-    Rstd,       # [N] reciprocal std from forward
-    GradX,      # [N, D] output: input gradient
-    N, D,
-    stride_gy, stride_x, stride_gx,
+    GradY,  # [N, D] upstream gradient (already includes weight effect)
+    X,  # [N, D] input
+    Rstd,  # [N] reciprocal std from forward
+    GradX,  # [N, D] output: input gradient
+    N,
+    D,
+    stride_gy,
+    stride_x,
+    stride_gx,
     BLOCK_D: tl.constexpr,
 ):
     """Compute dx for RMSNorm backward.
@@ -140,6 +145,7 @@ def _rms_norm_bwd_kernel(
 # Python Wrappers
 # =============================================================================
 
+
 def _rms_norm_forward(x: Tensor, eps: float):
     orig_shape = x.shape
     x_2d = x.reshape(-1, orig_shape[-1]).contiguous()
@@ -149,9 +155,13 @@ def _rms_norm_forward(x: Tensor, eps: float):
     rstd = torch.empty(N, device=x.device, dtype=torch.float32)
 
     _rms_norm_fwd_kernel[(N,)](
-        x_2d, y, rstd,
-        N, D,
-        x_2d.stride(0), y.stride(0),
+        x_2d,
+        y,
+        rstd,
+        N,
+        D,
+        x_2d.stride(0),
+        y.stride(0),
         eps,
     )
     return y.reshape(orig_shape), rstd
@@ -166,9 +176,15 @@ def _rms_norm_backward(grad_y: Tensor, x: Tensor, rstd: Tensor):
 
     grad_x = torch.empty_like(x_2d)
     _rms_norm_bwd_kernel[(N,)](
-        grad_y_2d, x_2d, rstd, grad_x,
-        N, D,
-        grad_y_2d.stride(0), x_2d.stride(0), grad_x.stride(0),
+        grad_y_2d,
+        x_2d,
+        rstd,
+        grad_x,
+        N,
+        D,
+        grad_y_2d.stride(0),
+        x_2d.stride(0),
+        grad_x.stride(0),
     )
 
     return grad_x.reshape(orig_shape)
@@ -177,6 +193,7 @@ def _rms_norm_backward(grad_y: Tensor, x: Tensor, rstd: Tensor):
 # =============================================================================
 # Autograd Function
 # =============================================================================
+
 
 class _FusedRMSNormFn(torch.autograd.Function):
     """Fused RMSNorm without weight — weight is applied via standard PyTorch mul

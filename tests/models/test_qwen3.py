@@ -1,6 +1,7 @@
 """Smoke test for Qwen3Decoder forward pass."""
 
 import torch
+
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 
@@ -8,14 +9,22 @@ from lset.models.decoder.qwen3.model import Qwen3Decoder
 def test_import():
     """Validation: import works."""
     from lset.models.decoder.qwen3.model import Qwen3Decoder  # noqa: F811
+
     assert Qwen3Decoder is not None
 
 
 def test_forward_shape():
     """Smoke test: random input produces correct output shape."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=1000, max_position_embeddings=256)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=1000,
+        max_position_embeddings=256,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     B, S = 2, 16
     input_ids = torch.randint(0, 1000, (B, S))
@@ -28,9 +37,16 @@ def test_forward_shape():
 
 def test_forward_with_lm_logits():
     """Smoke test: lm_logits returned when requested."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=1000, max_position_embeddings=256)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=1000,
+        max_position_embeddings=256,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     B, S = 2, 16
     input_ids = torch.randint(0, 1000, (B, S))
@@ -43,9 +59,16 @@ def test_forward_with_lm_logits():
 
 def test_forward_no_mask():
     """Forward pass without attention mask (pure causal)."""
-    config = Qwen3Config(num_hidden_layers=2, hidden_size=64, intermediate_size=128,
-                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
-                         vocab_size=1000, max_position_embeddings=256)
+    config = Qwen3Config(
+        num_hidden_layers=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        vocab_size=1000,
+        max_position_embeddings=256,
+    )
     model = Qwen3Decoder(config).to(dtype=torch.float32)
     input_ids = torch.randint(0, 1000, (2, 16))
     out = model(input_ids)

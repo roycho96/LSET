@@ -2,9 +2,11 @@
 
 import json
 import tempfile
+
 from pathlib import Path
 
 import pytest
+
 from tokenizers import Tokenizer
 
 from lset.train.data.dataset import EmbeddingDataset
@@ -24,10 +26,12 @@ def _write_jsonl(samples):
 
 
 def test_pair_format(tokenizer):
-    path = _write_jsonl([
-        {"query": "hello", "positive": "world"},
-        {"query": "foo", "positive": "bar"},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "hello", "positive": "world"},
+            {"query": "foo", "positive": "bar"},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     assert ds.format == "pair"
     sample = ds[0]
@@ -38,9 +42,11 @@ def test_pair_format(tokenizer):
 
 
 def test_triplet_format(tokenizer):
-    path = _write_jsonl([
-        {"query": "hello", "positive": "world", "negatives": ["bad1", "bad2"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "hello", "positive": "world", "negatives": ["bad1", "bad2"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     assert ds.format == "triplet"
     sample = ds[0]
@@ -49,9 +55,11 @@ def test_triplet_format(tokenizer):
 
 
 def test_multi_format(tokenizer):
-    path = _write_jsonl([
-        {"query": "hello", "positives": ["world", "earth"], "negatives": ["bad"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "hello", "positives": ["world", "earth"], "negatives": ["bad"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     assert ds.format == "multi"
     sample = ds[0]
@@ -60,13 +68,18 @@ def test_multi_format(tokenizer):
 
 
 def test_scored_format(tokenizer):
-    path = _write_jsonl([
-        {"query": "hello", "documents": [
-            {"text": "world", "score": 1.0},
-            {"text": "earth", "score": 0.5},
-            {"text": "bad", "score": 0.0},
-        ]},
-    ])
+    path = _write_jsonl(
+        [
+            {
+                "query": "hello",
+                "documents": [
+                    {"text": "world", "score": 1.0},
+                    {"text": "earth", "score": 0.5},
+                    {"text": "bad", "score": 0.0},
+                ],
+            },
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     assert ds.format == "scored"
     sample = ds[0]
@@ -87,9 +100,11 @@ def test_auto_detection(tokenizer):
 
 
 def test_num_hard_negatives(tokenizer):
-    path = _write_jsonl([
-        {"query": "hello", "positive": "world", "negatives": ["a", "b", "c", "d"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "hello", "positive": "world", "negatives": ["a", "b", "c", "d"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer, num_hard_negatives=2)
     sample = ds[0]
     assert len(sample["negatives"]) == 2

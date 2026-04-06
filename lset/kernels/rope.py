@@ -26,16 +26,17 @@ _BLOCK_HD = 128  # Process full HALF_D (64) in one tile for D=128
 # Forward Kernel
 # =============================================================================
 
+
 @triton.jit
 def _rope_fwd_kernel(
-    X,          # [T, H, D] input (Q or K)
-    Cos,        # cos values, [T, D] or [T, HALF_D]
-    Sin,        # sin values
-    Y,          # [T, H, D] output
-    T,          # total tokens
-    H,          # number of heads
-    D: tl.constexpr,          # head dimension (full)
-    HALF_D: tl.constexpr,     # D // 2
+    X,  # [T, H, D] input (Q or K)
+    Cos,  # cos values, [T, D] or [T, HALF_D]
+    Sin,  # sin values
+    Y,  # [T, H, D] output
+    T,  # total tokens
+    H,  # number of heads
+    D: tl.constexpr,  # head dimension (full)
+    HALF_D: tl.constexpr,  # D // 2
     stride_xt,  # X token stride
     stride_xh,  # X head stride
     stride_ct,  # Cos token stride
@@ -76,17 +77,22 @@ def _rope_fwd_kernel(
 # Backward Kernel
 # =============================================================================
 
+
 @triton.jit
 def _rope_bwd_kernel(
-    GradY,      # [T, H, D]
-    Cos, Sin,
-    GradX,      # [T, H, D]
-    T, H,
+    GradY,  # [T, H, D]
+    Cos,
+    Sin,
+    GradX,  # [T, H, D]
+    T,
+    H,
     D: tl.constexpr,
     HALF_D: tl.constexpr,
-    stride_gyt, stride_gyh,
+    stride_gyt,
+    stride_gyh,
     stride_ct,
-    stride_gxt, stride_gxh,
+    stride_gxt,
+    stride_gxh,
     BLOCK_HD: tl.constexpr,
 ):
     """Backward: dx1 = gy1*c + gy2*s, dx2 = -gy1*s + gy2*c"""
@@ -122,6 +128,7 @@ def _rope_bwd_kernel(
 # Python Wrappers
 # =============================================================================
 
+
 def _get_cos_sin_2d(cos, sin):
     """Normalize cos/sin to [T, D] shape."""
     if cos.dim() == 4:
@@ -134,7 +141,6 @@ def _get_cos_sin_2d(cos, sin):
 
 
 class FusedRoPE(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, x, cos, sin):
         is_padded = x.dim() == 4
@@ -156,12 +162,21 @@ class FusedRoPE(torch.autograd.Function):
 
         grid = (T * H,)
         _rope_fwd_kernel[grid](
-            x_3d, cos_2d, sin_2d, y,
-            T, H, D, HALF_D,
-            x_3d.stride(0), x_3d.stride(1),
+            x_3d,
+            cos_2d,
+            sin_2d,
+            y,
+            T,
+            H,
+            D,
+            HALF_D,
+            x_3d.stride(0),
+            x_3d.stride(1),
             cos_2d.stride(0),
-            y.stride(0), y.stride(1),
-            BLOCK_HD=_BLOCK_HD, num_warps=4,
+            y.stride(0),
+            y.stride(1),
+            BLOCK_HD=_BLOCK_HD,
+            num_warps=4,
         )
 
         ctx.save_for_backward(cos_2d, sin_2d)
@@ -187,12 +202,21 @@ class FusedRoPE(torch.autograd.Function):
 
         grid = (T * H,)
         _rope_bwd_kernel[grid](
-            grad_y_3d, cos_2d, sin_2d, grad_x,
-            T, H, D, HALF_D,
-            grad_y_3d.stride(0), grad_y_3d.stride(1),
+            grad_y_3d,
+            cos_2d,
+            sin_2d,
+            grad_x,
+            T,
+            H,
+            D,
+            HALF_D,
+            grad_y_3d.stride(0),
+            grad_y_3d.stride(1),
             cos_2d.stride(0),
-            grad_x.stride(0), grad_x.stride(1),
-            BLOCK_HD=_BLOCK_HD, num_warps=4,
+            grad_x.stride(0),
+            grad_x.stride(1),
+            BLOCK_HD=_BLOCK_HD,
+            num_warps=4,
         )
 
         if is_padded:
@@ -219,11 +243,13 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     T = q.shape[0] if q.dim() == 3 else q.shape[0] * q.shape[2]
     if q.is_cuda and T >= _FUSED_ROPE_THRESHOLD:
         return fused_apply_rotary_pos_emb(q, k, cos, sin)
+
     # Fallback
     def _rotate_half(x):
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
+
     q_embed = (q * cos) + (_rotate_half(q) * sin)
     k_embed = (k * cos) + (_rotate_half(k) * sin)
     return q_embed, k_embed

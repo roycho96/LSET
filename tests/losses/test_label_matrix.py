@@ -2,13 +2,15 @@
 
 import json
 import tempfile
+
 from pathlib import Path
 
 import pytest
+
 from tokenizers import Tokenizer
 
-from lset.train.data.dataset import EmbeddingDataset
 from lset.train.data.collator import EmbeddingCollator
+from lset.train.data.dataset import EmbeddingDataset
 
 
 @pytest.fixture
@@ -25,10 +27,12 @@ def _write_jsonl(samples):
 
 
 def test_label_matrix_shape(tokenizer):
-    path = _write_jsonl([
-        {"query": "a", "positives": ["b"], "negatives": ["c"]},
-        {"query": "d", "positives": ["e"], "negatives": ["f"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "a", "positives": ["b"], "negatives": ["c"]},
+            {"query": "d", "positives": ["e"], "negatives": ["f"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     collator = EmbeddingCollator(tokenizer)
     batch = collator([ds[0], ds[1]])
@@ -36,10 +40,12 @@ def test_label_matrix_shape(tokenizer):
 
 
 def test_positives_marked_correctly(tokenizer):
-    path = _write_jsonl([
-        {"query": "a", "positives": ["b"], "negatives": ["c"]},
-        {"query": "d", "positives": ["e"], "negatives": ["f"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "a", "positives": ["b"], "negatives": ["c"]},
+            {"query": "d", "positives": ["e"], "negatives": ["f"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     collator = EmbeddingCollator(tokenizer)
     batch = collator([ds[0], ds[1]])
@@ -52,9 +58,11 @@ def test_positives_marked_correctly(tokenizer):
 
 
 def test_multi_positive_label_matrix(tokenizer):
-    path = _write_jsonl([
-        {"query": "a", "positives": ["b", "c"], "negatives": ["d"]},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "a", "positives": ["b", "c"], "negatives": ["d"]},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     collator = EmbeddingCollator(tokenizer)
     batch = collator([ds[0]])
@@ -66,10 +74,12 @@ def test_multi_positive_label_matrix(tokenizer):
 
 
 def test_packed_mode_with_labels(tokenizer):
-    path = _write_jsonl([
-        {"query": "a", "positives": ["b"], "negatives": []},
-        {"query": "c", "positives": ["d"], "negatives": []},
-    ])
+    path = _write_jsonl(
+        [
+            {"query": "a", "positives": ["b"], "negatives": []},
+            {"query": "c", "positives": ["d"], "negatives": []},
+        ]
+    )
     ds = EmbeddingDataset(path, tokenizer)
     collator = EmbeddingCollator(tokenizer, packed=True)
     batch = collator([ds[0], ds[1]])

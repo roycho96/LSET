@@ -1,6 +1,7 @@
 """Tests for pooling strategies."""
 
 import torch
+
 from lset.tasks.pooling import pool
 
 

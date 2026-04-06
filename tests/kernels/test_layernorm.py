@@ -18,7 +18,6 @@ def _reference_layer_norm(x, weight, bias, eps=1e-5):
 
 
 class TestFusedLayerNorm:
-
     def test_numerical_match_bf16(self, device):
         """Fused vs F.layer_norm reference in bf16."""
         from lset.kernels.layernorm import fused_layer_norm
