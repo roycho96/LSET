@@ -91,7 +91,7 @@ class TestFusedPoolNormalize:
 
     def test_packed_pool_integration(self, device):
         """packed_pool uses fused path on CUDA."""
-        from lset.tasks.packed_pooling import packed_pool
+        from lset.models.packed_pooling import packed_pool
 
         hidden, cu_seqlens, _ = _make_packed_data(device=device)
 

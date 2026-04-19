@@ -11,6 +11,17 @@ from lset.models.decoder.qwen3.mlp import Qwen3MLP
 
 
 class Qwen3Block(nn.Module):
+    """Qwen3 transformer block returning ``(mlp_out, residual)``.
+
+    The block no longer closes the residual loop internally. Instead the
+    caller (``Qwen3Decoder``) threads ``residual`` through every block so the
+    ``residual + mlp_out`` add at the block boundary can be fused with the
+    next block's ``input_layernorm`` via a single ``residual_rms_norm`` call.
+
+    On the first block ``residual`` is ``None``; ``input_layernorm`` runs
+    unfused and the output feeds ``self_attn`` directly.
+    """
+
     def __init__(self, config: Qwen3Config, fused_projections: bool = False):
         super().__init__()
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -21,6 +32,7 @@ class Qwen3Block(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
         cos: torch.Tensor,
         sin: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
@@ -28,47 +40,38 @@ class Qwen3Block(nn.Module):
         position_ids: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
-    ) -> torch.Tensor:
-        """Unified forward for both padded and packed modes."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         packed = cu_seqlens is not None
 
-        # Pre-norm attention
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        if packed:
-            hidden_states = self.self_attn.forward_packed(hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen)
+        # Pre-attention: fuse (residual + hidden_states) + input_layernorm for
+        # every block except the first.
+        if residual is None:
+            attn_in = self.input_layernorm(hidden_states)
+            residual = hidden_states
         else:
-            hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
+            attn_in, residual = _residual_rms_norm(
+                residual,
+                hidden_states,
+                self.input_layernorm.weight,
+                self.input_layernorm.eps,
+            )
 
-        # Fused residual add + post-attention RMSNorm (pre-MLP norm)
-        hidden_states, residual = _residual_rms_norm(
+        if packed:
+            attn_out = self.self_attn.forward_packed(
+                attn_in, cos, sin, position_ids, cu_seqlens, max_seqlen
+            )
+        else:
+            attn_out = self.self_attn(attn_in, cos, sin, attention_mask)
+
+        # Post-attention: fused residual add + post-attention RMSNorm.
+        mlp_in, residual = _residual_rms_norm(
             residual,
-            hidden_states,
+            attn_out,
             self.post_attention_layernorm.weight,
             self.post_attention_layernorm.eps,
         )
 
-        # MLP
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-
-        return hidden_states
-
-    def forward_packed(
-        self,
-        hidden_states: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        position_ids: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-    ) -> torch.Tensor:
-        """Convenience method — routes through forward() for FSDP2 compatibility."""
-        return self(
-            hidden_states,
-            cos,
-            sin,
-            position_ids=position_ids,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
+        mlp_out = self.mlp(mlp_in)
+        # No final residual add here — the next block (or the decoder's
+        # post-loop add) closes the loop.
+        return mlp_out, residual

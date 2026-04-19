@@ -1,22 +1,19 @@
-"""Fused LayerNorm — single Triton kernel for encoder models (BERT, XLM-RoBERTa).
+"""Fused LayerNorm — single-pass Triton kernel.
 
-Standard LayerNorm:
-  x_f32 = x.float()
-  mean = x_f32.mean(-1)
-  var = ((x_f32 - mean) ** 2).mean(-1)
-  x_hat = (x_f32 - mean) / sqrt(var + eps)
-  out = weight * x_hat + bias
-  → ~8 kernel launches
+Matches the ``rmsnorm.py`` pattern: ``BLOCK_SIZE = next_pow2(D)`` single-row
+load, ``weight`` and ``bias`` folded inside the kernel store, backward with
+persistent ``(sm_count,)`` grid accumulating per-CTA partial ``dW`` and
+``dB`` reduced on host.
 
-Fused:
-  One kernel: read x → compute mean, var → normalize → write x_hat.
-  Weight and bias applied via standard PyTorch ops OUTSIDE the custom Function
-  to avoid AccumulateGrad fill_ overhead in GradCache chunked backward.
-
-Design follows FusedRMSNorm pattern exactly:
-  kernel computes x_hat = (x - mean) * rstd
-  Python does: weight * x_hat + bias
+``mean`` and ``rstd`` are computed via the biased estimator
+``var = E[X²] − E[X]²`` with a clamp against tiny negatives from fp rounding
+— identical to the previous LSET LayerNorm but now in a single reduction
+pass over X.
 """
+
+from __future__ import annotations
+
+import math
 
 import torch
 import triton
@@ -24,252 +21,234 @@ import triton.language as tl
 
 from torch import Tensor
 
-# =============================================================================
-# Forward Kernel
-# =============================================================================
+try:
+    from triton.language.extra.libdevice import rsqrt as _rsqrt
+except ImportError:
+    try:
+        from triton.language.extra.cuda.libdevice import rsqrt as _rsqrt
+    except ImportError:
+        from triton.language.math import rsqrt as _rsqrt
+
+_MAX_FUSED_SIZE = 65536
+
+_TRITON_DTYPE = {
+    torch.float32: tl.float32,
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+    torch.float64: tl.float64,
+}
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
+def _calc_settings(n: int) -> tuple[int, int]:
+    BLOCK_SIZE = triton.next_power_of_2(n)
+    if BLOCK_SIZE > _MAX_FUSED_SIZE:
+        raise RuntimeError(f"LayerNorm feature dim {n} exceeds {_MAX_FUSED_SIZE}.")
+    if BLOCK_SIZE >= 32768:
+        num_warps = 32
+    elif BLOCK_SIZE >= 8192:
+        num_warps = 16
+    elif BLOCK_SIZE >= 2048:
+        num_warps = 8
+    else:
+        num_warps = 4
+    return BLOCK_SIZE, num_warps
+
+
 @triton.jit
 def _layer_norm_fwd_kernel(
-    X,  # [N, D] input
-    Y,  # [N, D] output (normalized x_hat, WITHOUT weight/bias)
-    Mean,  # [N] row means (for backward)
-    Rstd,  # [N] reciprocal std (for backward)
-    N,  # number of rows
-    D,  # number of columns
-    stride_x,  # X row stride
-    stride_y,  # Y row stride
-    eps,  # epsilon
-    BLOCK_D: tl.constexpr,
+    Y_ptr, Y_row_stride,
+    X_ptr, X_row_stride,
+    W_ptr,
+    B_ptr,
+    MEAN_ptr,
+    RSTD_ptr,
+    n_cols,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    """y = w * (x − mean) * rstd + b, row-wise."""
+    row_idx = tl.program_id(0).to(tl.int64)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
     ACCUM_DTYPE: tl.constexpr = tl.float64 if USE_FP64 else tl.float32
 
-    # Pass 1: compute mean
-    row_sum = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0)
-        row_sum += tl.sum(x.to(ACCUM_DTYPE))
+    x = tl.load(X_ptr + row_idx * X_row_stride + cols, mask=mask, other=0.0)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+    b = tl.load(B_ptr + cols, mask=mask, other=0.0)
 
-    mean = row_sum / D
+    x_dtype = x.dtype
+    x_acc = x.to(ACCUM_DTYPE)
+    # E[X²] − E[X]² single-pass variance (biased, torch-compatible).
+    mean = tl.sum(x_acc, axis=0) / n_cols
+    sum_sq = tl.sum(x_acc * x_acc, axis=0) / n_cols
+    var = sum_sq - mean * mean
+    var = tl.maximum(var, 0.0)
+    rstd = _rsqrt(var + eps)
 
-    # Pass 2: compute variance
-    var_sum = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0)
-        diff = x.to(ACCUM_DTYPE) - mean
-        diff = tl.where(mask, diff, 0.0)
-        var_sum += tl.sum(diff * diff)
+    tl.store(MEAN_ptr + row_idx, mean)
+    tl.store(RSTD_ptr + row_idx, rstd)
 
-    var = var_sum / D
-    rstd = tl.math.rsqrt(var + eps)
-
-    # Save for backward
-    tl.store(Mean + row, mean)
-    tl.store(Rstd + row, rstd)
-
-    # Pass 3: normalize (no weight/bias — applied outside in Python)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0)
-        y = (x.to(ACCUM_DTYPE) - mean) * rstd
-        tl.store(Y + row * stride_y + offs_d, y.to(x.dtype), mask=mask)
+    x_hat = (x_acc - mean) * rstd
+    y = x_hat.to(x_dtype) * w + b
+    tl.store(Y_ptr + row_idx * Y_row_stride + cols, y, mask=mask)
 
 
-# =============================================================================
-# Backward Kernel
-# =============================================================================
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
 @triton.jit
 def _layer_norm_bwd_kernel(
-    GradY,  # [N, D] upstream gradient (includes weight effect from chain rule)
-    X,  # [N, D] input from forward
-    Mean,  # [N] row means from forward
-    Rstd,  # [N] reciprocal std from forward
-    GradX,  # [N, D] output: input gradient
-    N,
-    D,
-    stride_gy,
-    stride_x,
-    stride_gx,
-    BLOCK_D: tl.constexpr,
+    dY_ptr, dY_row_stride,
+    dX_ptr, dX_row_stride,
+    X_ptr, X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    MEAN_ptr,
+    RSTD_ptr,
+    dW_ptr, dW_row_stride,
+    dB_ptr, dB_row_stride,
+    n_rows, n_cols,
+    rows_per_program,
+    BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
-    """Backward for LayerNorm.
-
-    Forward: y = (x - mean) * rstd
-    Backward: dx = rstd * (gy - mean(gy) - x_hat * mean(x_hat * gy))
-    where x_hat = (x - mean) * rstd
-    """
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    """dx via standard LN gradient; dW and dB partials per-CTA."""
+    block_id = tl.program_id(0).to(tl.int64)
+    row_start = block_id * rows_per_program
+    row_end = tl.minimum((block_id + 1) * rows_per_program, n_rows)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
     ACCUM_DTYPE: tl.constexpr = tl.float64 if USE_FP64 else tl.float32
 
-    mean = tl.load(Mean + row).to(ACCUM_DTYPE)
-    rstd = tl.load(Rstd + row).to(ACCUM_DTYPE)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=ACCUM_DTYPE)
+    dB_row = tl.zeros((BLOCK_SIZE,), dtype=ACCUM_DTYPE)
 
-    # Pass 1: compute mean(gy) and mean(x_hat * gy)
-    sum_gy = tl.zeros([], dtype=ACCUM_DTYPE)
-    sum_xhat_gy = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        gy = tl.load(GradY + row * stride_gy + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        x_hat = (x - mean) * rstd
-        sum_gy += tl.sum(gy)
-        sum_xhat_gy += tl.sum(x_hat * gy)
-    mean_gy = sum_gy / D
-    mean_xhat_gy = sum_xhat_gy / D
+    for row_idx in range(row_start, row_end):
+        dy = tl.load(dY_ptr + row_idx * dY_row_stride + cols, mask=mask, other=0.0)
+        x = tl.load(X_ptr + row_idx * X_row_stride + cols, mask=mask, other=0.0)
+        mean = tl.load(MEAN_ptr + row_idx)
+        rstd = tl.load(RSTD_ptr + row_idx)
 
-    # Pass 2: dx = rstd * (gy - mean_gy - x_hat * mean_xhat_gy)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        gy = tl.load(GradY + row * stride_gy + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        x_hat = (x - mean) * rstd
-        gx = rstd * (gy - mean_gy - x_hat * mean_xhat_gy)
-        tl.store(GradX + row * stride_gx + offs_d, gx.to(gy.dtype), mask=mask)
+        x_acc = x.to(ACCUM_DTYPE)
+        x_hat = (x_acc - mean) * rstd
 
+        m = (dy * w).to(ACCUM_DTYPE)
+        sum_m = tl.sum(m, axis=0) / n_cols
+        sum_m_xhat = tl.sum(m * x_hat, axis=0) / n_cols
+        dx = rstd * (m - sum_m - x_hat * sum_m_xhat)
 
-# =============================================================================
-# Python Wrappers
-# =============================================================================
+        dW_row += (dy * x_hat.to(X_dtype)).to(ACCUM_DTYPE)
+        dB_row += dy.to(ACCUM_DTYPE)
+
+        tl.store(dX_ptr + row_idx * dX_row_stride + cols, dx.to(X_dtype), mask=mask)
+
+    tl.store(dW_ptr + block_id * dW_row_stride + cols, dW_row, mask=mask)
+    tl.store(dB_ptr + block_id * dB_row_stride + cols, dB_row, mask=mask)
 
 
-def _layer_norm_forward(x: Tensor, eps: float):
-    orig_shape = x.shape
-    x_2d = x.reshape(-1, orig_shape[-1]).contiguous()
-    N, D = x_2d.shape
+def _fwd(x: Tensor, w: Tensor, b: Tensor, eps: float):
+    shape = x.shape
+    D = shape[-1]
+    x_2d = x.reshape(-1, D)
+    if not x_2d.is_contiguous():
+        x_2d = x_2d.contiguous()
+    N = x_2d.shape[0]
 
+    BLOCK_SIZE, num_warps = _calc_settings(D)
+    use_fp64 = x.dtype == torch.float64
+    stats_dtype = torch.float64 if use_fp64 else torch.float32
     y = torch.empty_like(x_2d)
-    stats_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     mean = torch.empty(N, device=x.device, dtype=stats_dtype)
     rstd = torch.empty(N, device=x.device, dtype=stats_dtype)
 
-    use_fp64 = x.dtype == torch.float64
     _layer_norm_fwd_kernel[(N,)](
-        x_2d,
-        y,
-        mean,
-        rstd,
-        N,
-        D,
-        x_2d.stride(0),
-        y.stride(0),
-        eps,
+        y, y.stride(0),
+        x_2d, x_2d.stride(0),
+        w, b,
+        mean, rstd,
+        D, eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
         USE_FP64=use_fp64,
     )
-    return y.reshape(orig_shape), mean, rstd
+    return y.view(shape), x_2d, mean, rstd, BLOCK_SIZE, num_warps
 
 
-def _layer_norm_backward(grad_y: Tensor, x: Tensor, mean: Tensor, rstd: Tensor):
-    orig_shape = grad_y.shape
-    D = orig_shape[-1]
-    grad_y_2d = grad_y.reshape(-1, D).contiguous()
-    x_2d = x.reshape(-1, D).contiguous()
-    N = x_2d.shape[0]
+def _bwd(grad_y, x_2d, w, mean, rstd, BLOCK_SIZE, num_warps):
+    shape = grad_y.shape
+    D = shape[-1]
+    grad_y_2d = grad_y.reshape(-1, D)
+    if not grad_y_2d.is_contiguous():
+        grad_y_2d = grad_y_2d.contiguous()
+    N = grad_y_2d.shape[0]
 
-    grad_x = torch.empty_like(x_2d)
-    use_fp64 = grad_y.dtype == torch.float64
-    _layer_norm_bwd_kernel[(N,)](
-        grad_y_2d,
-        x_2d,
-        mean,
-        rstd,
-        grad_x,
-        N,
-        D,
-        grad_y_2d.stride(0),
-        x_2d.stride(0),
-        grad_x.stride(0),
+    sm_count = torch.cuda.get_device_properties(x_2d.device).multi_processor_count
+    rows_per_program = math.ceil(N / sm_count)
+
+    dx = torch.empty_like(grad_y_2d)
+    use_fp64 = x_2d.dtype == torch.float64
+    accum_dtype = torch.float64 if use_fp64 else torch.float32
+    _dW = torch.empty((sm_count, D), dtype=accum_dtype, device=w.device)
+    _dB = torch.empty((sm_count, D), dtype=accum_dtype, device=w.device)
+
+    _layer_norm_bwd_kernel[(sm_count,)](
+        grad_y_2d, grad_y_2d.stride(0),
+        dx, dx.stride(0),
+        x_2d, x_2d.stride(0),
+        _TRITON_DTYPE[x_2d.dtype],
+        w,
+        mean, rstd,
+        _dW, _dW.stride(0),
+        _dB, _dB.stride(0),
+        N, D,
+        rows_per_program,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
         USE_FP64=use_fp64,
     )
-
-    return grad_x.reshape(orig_shape)
-
-
-# =============================================================================
-# Autograd Function
-# =============================================================================
+    dw = _dW.sum(dim=0).to(w.dtype)
+    db = _dB.sum(dim=0).to(w.dtype)
+    return dx.view(shape), dw, db
 
 
 class _FusedLayerNormFn(torch.autograd.Function):
-    """Fused LayerNorm without weight/bias — they are applied via standard
-    PyTorch ops so their gradients flow through normal autograd, avoiding
-    AccumulateGrad fill_ overhead in GradCache chunked backward."""
+    """Weight/bias-folded LayerNorm; returns ``w * (x − μ) * rstd + b``."""
 
     @staticmethod
-    def forward(ctx, x: Tensor, eps: float):
-        y, mean, rstd = _layer_norm_forward(x, eps)
-        ctx.save_for_backward(x, mean, rstd)
+    def forward(ctx, x, weight, bias, eps):
+        y, x_2d, mean, rstd, BLOCK_SIZE, num_warps = _fwd(x, weight, bias, eps)
+        ctx.save_for_backward(x_2d, weight, mean, rstd)
+        ctx.BLOCK_SIZE = BLOCK_SIZE
+        ctx.num_warps = num_warps
         return y
 
     @staticmethod
-    def backward(ctx, grad_y: Tensor):
-        x, mean, rstd = ctx.saved_tensors
-        grad_x = _layer_norm_backward(grad_y, x, mean, rstd)
-        return grad_x, None
+    def backward(ctx, grad_y):
+        x_2d, weight, mean, rstd = ctx.saved_tensors
+        dx, dw, db = _bwd(grad_y, x_2d, weight, mean, rstd, ctx.BLOCK_SIZE, ctx.num_warps)
+        return dx, dw, db, None
 
-
-# =============================================================================
-# Public API
-# =============================================================================
 
 _FUSED_LAYERNORM_THRESHOLD = 256
 
 
 def fused_layer_norm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
-    """Fused LayerNorm — force fused path.
-
-    Normalization is done in a single Triton kernel. Weight scaling and bias
-    addition are done via standard PyTorch ops so weight/bias gradients flow
-    through normal autograd (avoids AccumulateGrad overhead in GradCache).
-    """
-    x_hat = _FusedLayerNormFn.apply(x, eps)
-    return weight * x_hat.to(x.dtype) + bias
+    """Fused LayerNorm — force Triton path. ``y = w * layer_norm(x) + b``."""
+    return _FusedLayerNormFn.apply(x, weight, bias, eps)
 
 
 def layer_norm(x: Tensor, weight: Tensor, bias: Tensor, eps: float = 1e-5) -> Tensor:
     """LayerNorm with automatic Triton dispatch."""
     import os
 
+    D = x.shape[-1]
     if (
         os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
         and x.is_cuda
-        and x.numel() // x.shape[-1] >= _FUSED_LAYERNORM_THRESHOLD
+        and x.numel() // D >= _FUSED_LAYERNORM_THRESHOLD
+        and triton.next_power_of_2(D) <= _MAX_FUSED_SIZE
     ):
         return fused_layer_norm(x, weight, bias, eps)
-    # Fallback: standard PyTorch
+    # Fallback: cuDNN / aten
     return torch.nn.functional.layer_norm(x, weight.shape, weight, bias, eps)

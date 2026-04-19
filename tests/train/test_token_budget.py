@@ -5,14 +5,14 @@ import torch
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
-from lset.tasks.grad_cache import GradCacheWrapper
-from lset.tasks.grad_cache import _plan_chunks_token_budget
+from lset.train.grad_cache import GradCacheWrapper
+from lset.train.grad_cache import _by_token_budget as _plan_chunks_token_budget
 
 
 class TestPlanChunksTokenBudget:
     def test_uniform_lengths(self):
         lengths = [100] * 10
-        chunks = _plan_chunks_token_budget(lengths, budget=300)
+        chunks = _plan_chunks_token_budget(lengths, token_budget=300)
         # 3 per chunk at 300 budget, last chunk has 1
         assert all(b < e for b, e in chunks)
         assert chunks[0] == (0, 3)
@@ -23,19 +23,19 @@ class TestPlanChunksTokenBudget:
 
     def test_variable_lengths(self):
         lengths = [50, 50, 200, 50, 50]
-        chunks = _plan_chunks_token_budget(lengths, budget=150)
+        chunks = _plan_chunks_token_budget(lengths, token_budget=150)
         # [50, 50] fits in 150, then [200] alone (exceeds but min 1), then [50, 50]
         total = sum(e - b for b, e in chunks)
         assert total == 5
 
     def test_single_long_sequence(self):
         lengths = [1000]
-        chunks = _plan_chunks_token_budget(lengths, budget=100)
+        chunks = _plan_chunks_token_budget(lengths, token_budget=100)
         assert chunks == [(0, 1)]
 
     def test_all_sequences_included(self):
         lengths = [30, 50, 80, 120, 40, 60, 90, 10]
-        chunks = _plan_chunks_token_budget(lengths, budget=200)
+        chunks = _plan_chunks_token_budget(lengths, token_budget=200)
         covered = set()
         for b, e in chunks:
             for i in range(b, e):
@@ -44,7 +44,7 @@ class TestPlanChunksTokenBudget:
 
     def test_budget_roughly_respected(self):
         lengths = [64, 128, 32, 256, 64, 128, 64, 32]
-        chunks = _plan_chunks_token_budget(lengths, budget=256)
+        chunks = _plan_chunks_token_budget(lengths, token_budget=256)
         for b, e in chunks:
             sum(lengths[b:e])
             # Each chunk should be close to budget (may exceed by one seq)
@@ -55,7 +55,7 @@ class TestPlanChunksTokenBudget:
                 assert without_last <= 256
 
     def test_empty_input(self):
-        chunks = _plan_chunks_token_budget([], budget=100)
+        chunks = _plan_chunks_token_budget([], token_budget=100)
         assert chunks == []
 
 

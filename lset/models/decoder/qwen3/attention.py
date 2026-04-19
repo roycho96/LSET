@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from lset.kernels import apply_rotary_pos_emb as _fused_apply_rotary_pos_emb
 from lset.kernels import rms_norm as _fused_rms_norm
+from lset.kernels.qk_norm_rope import qk_norm_rope as _fused_qk_norm_rope
 from lset.models.decoder.qwen3.config import Qwen3Config
 
 # Global attention backend setting: "auto" | "flash_attn" | "varlen_attn" | "sdpa"
@@ -102,24 +103,16 @@ class Qwen3Attention(nn.Module):
             k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
             v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        # Fused QK-norm + RoPE — single kernel replacing q_norm + k_norm + rope.
+        q, k = _fused_qk_norm_rope(q, k, self.q_norm.weight, self.k_norm.weight, cos, sin, self.q_norm.eps)
 
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)
-
-        # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
-        local_q_heads = q.shape[1]
-        local_kv_heads = k.shape[1]
-        local_kv_groups = local_q_heads // local_kv_heads
-        if local_kv_groups > 1:
-            k = k.repeat_interleave(local_kv_groups, dim=1)
-            v = v.repeat_interleave(local_kv_groups, dim=1)
-
-        # Use SDPA with causal mask or custom mask
+        # SDPA supports GQA natively via enable_gqa=True (PyTorch ≥2.5) — no need
+        # to materialize repeat_interleave'd K/V, saving (kv_groups-1)x the K and V
+        # allocation.
         if attention_mask is not None:
-            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
+            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, enable_gqa=True)
         else:
-            attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(attn_out)
@@ -158,13 +151,10 @@ class Qwen3Attention(nn.Module):
             k = self.k_proj(hidden_states).view(T, -1, self.head_dim)
             v = self.v_proj(hidden_states).view(T, -1, self.head_dim)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        # Position-indexed RoPE
+        # Position-indexed cos/sin for packed mode, then fused qk-norm + rope.
         cos_pos = cos[position_ids].unsqueeze(1)  # (T, 1, D)
         sin_pos = sin[position_ids].unsqueeze(1)
-        q, k = _fused_apply_rotary_pos_emb(q, k, cos_pos, sin_pos)
+        q, k = _fused_qk_norm_rope(q, k, self.q_norm.weight, self.k_norm.weight, cos_pos, sin_pos, self.q_norm.eps)
 
         local_q_heads = q.shape[1]
         local_kv_heads = k.shape[1]
@@ -296,12 +286,8 @@ def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_hea
     k = k.unsqueeze(0).transpose(1, 2)  # (1, num_kv_heads, T, D)
     v = v.unsqueeze(0).transpose(1, 2)
 
-    # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
-    if num_kv_groups > 1:
-        k = k.repeat_interleave(num_kv_groups, dim=1)
-        v = v.repeat_interleave(num_kv_groups, dim=1)
-
-    attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    # Native GQA via enable_gqa=True (PyTorch ≥2.5) — no repeat_interleave needed.
+    attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, enable_gqa=(num_kv_groups > 1))
     # (1, num_heads, T, D) → (T, num_heads, D)
     attn_out = attn_out.squeeze(0).transpose(0, 1)
     return attn_out

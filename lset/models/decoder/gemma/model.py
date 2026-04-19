@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from lset.kernels import geglu as _geglu
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 from lset.kernels import rms_norm as _fused_rms_norm
+from lset.kernels.qk_norm_rope import qk_norm_rope as _fused_qk_norm_rope
 from lset.models.decoder.gemma.config import GemmaConfig
 from lset.models.decoder.qwen3.attention import apply_rotary_pos_emb
 
@@ -102,21 +103,20 @@ class GemmaAttention(nn.Module):
             k = self.k_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
             v = self.v_proj(hidden_states).view(B, S, -1, self.head_dim).transpose(1, 2)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)
-
-        # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
-        local_q_heads = q.shape[1]
-        local_kv_heads = k.shape[1]
-        local_kv_groups = local_q_heads // local_kv_heads
-        if local_kv_groups > 1:
-            k = k.repeat_interleave(local_kv_groups, dim=1)
-            v = v.repeat_interleave(local_kv_groups, dim=1)
+        # Fused QK-norm + RoPE; Gemma uses ``(1 + weight)`` offset semantics.
+        q, k = _fused_qk_norm_rope(
+            q, k,
+            1.0 + self.q_norm.weight,
+            1.0 + self.k_norm.weight,
+            cos, sin,
+            self.q_norm.eps,
+        )
 
         # Custom attention scaling
         q = q * self.attn_scale
+
+        # Native GQA via enable_gqa.
+        enable_gqa = q.shape[1] != k.shape[1]
 
         # Causal attention (matching HF Gemma3 behavior)
         # Note: despite config having use_bidirectional_attention=True,
@@ -135,9 +135,11 @@ class GemmaAttention(nn.Module):
                 torch.tensor(0.0, dtype=q.dtype, device=q.device),
                 torch.tensor(float("-inf"), dtype=q.dtype, device=q.device),
             )
-            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=causal + pad, scale=1.0)
+            attn_out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=causal + pad, scale=1.0, enable_gqa=enable_gqa
+            )
         else:
-            attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=1.0)
+            attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=1.0, enable_gqa=enable_gqa)
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(attn_out)
@@ -179,31 +181,40 @@ class GemmaBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
         cos: torch.Tensor,
         sin: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        # Pre-norm attention
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
-        hidden_states = self.post_attention_layernorm(hidden_states)
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Pre-attention: fuse (residual + hidden_states) + input_layernorm for
+        # every block except the first. Gemma RMSNorm uses ``1 + weight``.
+        if residual is None:
+            attn_in = self.input_layernorm(hidden_states)
+            residual = hidden_states
+        else:
+            attn_in, residual = _residual_rms_norm(
+                residual,
+                hidden_states,
+                1.0 + self.input_layernorm.weight,
+                self.input_layernorm.eps,
+            )
 
-        # Fused: (residual + hidden_states) then pre_feedforward_layernorm
-        # Gemma norms use (1 + weight) instead of weight
-        hidden_states, residual = _residual_rms_norm(
+        attn_out = self.self_attn(attn_in, cos, sin, attention_mask)
+        attn_out = self.post_attention_layernorm(attn_out)
+
+        # Fused: (residual + attn_out) → pre_feedforward_layernorm.
+        mlp_in, residual = _residual_rms_norm(
             residual,
-            hidden_states,
+            attn_out,
             1.0 + self.pre_feedforward_layernorm.weight,
             self.pre_feedforward_layernorm.eps,
         )
 
-        # MLP with post-feedforward norm
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
-
-        return hidden_states
+        mlp_out = self.mlp(mlp_in)
+        mlp_out = self.post_feedforward_layernorm(mlp_out)
+        # Caller fuses ``residual + mlp_out`` with the next block's
+        # input_layernorm (or closes the loop before ``self.norm``).
+        return mlp_out, residual
 
 
 class GemmaEmbeddingModel(nn.Module):
@@ -257,13 +268,15 @@ class GemmaEmbeddingModel(nn.Module):
         cos_local = cos_local.to(hidden_states.dtype)
         sin_local = sin_local.to(hidden_states.dtype)
 
+        residual: torch.Tensor | None = None
         for i, layer in enumerate(self.layers):
             if self.layer_is_sliding[i]:
                 cos, sin = cos_local, sin_local
             else:
                 cos, sin = cos_global, sin_global
-            hidden_states = layer(hidden_states, cos, sin, attention_mask)
+            hidden_states, residual = layer(hidden_states, residual, cos, sin, attention_mask)
 
+        hidden_states = residual + hidden_states
         hidden_states = self.norm(hidden_states)
 
         return {"hidden_states": hidden_states}

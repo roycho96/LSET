@@ -112,19 +112,12 @@ class LlamaAttention(nn.Module):
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # GQA: repeat KV heads via repeat_interleave (benchmarked faster than expand+reshape)
-        local_q_heads = q.shape[1]
-        local_kv_heads = k.shape[1]
-        local_kv_groups = local_q_heads // local_kv_heads
-        if local_kv_groups > 1:
-            k = k.repeat_interleave(local_kv_groups, dim=1)
-            v = v.repeat_interleave(local_kv_groups, dim=1)
-
-        # Bidirectional — no causal mask, just padding mask
+        # Native GQA via enable_gqa — no repeat_interleave allocation.
+        enable_gqa = q.shape[1] != k.shape[1]
         if attention_mask is not None:
-            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
+            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, enable_gqa=enable_gqa)
         else:
-            attn_out = F.scaled_dot_product_attention(q, k, v)
+            attn_out = F.scaled_dot_product_attention(q, k, v, enable_gqa=enable_gqa)
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(attn_out)

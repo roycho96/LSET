@@ -81,9 +81,11 @@ class LlamaDecoder(nn.Module):
         if attention_mask is not None and (attention_mask == 0).any():
             attn_mask = self._make_padding_mask(attention_mask, cos.dtype, device)
 
+        residual: torch.Tensor | None = None
         for layer in self.layers:
-            hidden_states = layer(hidden_states, cos, sin, attn_mask)
+            hidden_states, residual = layer(hidden_states, residual, cos, sin, attn_mask)
 
+        hidden_states = residual + hidden_states
         hidden_states = self.norm(hidden_states)
 
         # DTensor → full tensor for pooling
@@ -114,9 +116,11 @@ class LlamaDecoder(nn.Module):
         cos = cos.squeeze(0).squeeze(0).to(hidden_states.dtype)
         sin = sin.squeeze(0).squeeze(0).to(hidden_states.dtype)
 
+        residual: torch.Tensor | None = None
         for layer in self.layers:
-            hidden_states = layer(
+            hidden_states, residual = layer(
                 hidden_states,
+                residual,
                 cos,
                 sin,
                 position_ids=position_ids,
@@ -124,6 +128,7 @@ class LlamaDecoder(nn.Module):
                 max_seqlen=max_seqlen,
             )
 
+        hidden_states = residual + hidden_states
         hidden_states = self.norm(hidden_states)
 
         result: dict[str, torch.Tensor] = {"hidden_states": hidden_states}

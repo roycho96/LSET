@@ -1,4 +1,9 @@
-"""Llama transformer block — same structure as Qwen3 (pre-norm RMSNorm)."""
+"""Llama transformer block — same structure as Qwen3 (pre-norm RMSNorm).
+
+Returns ``(mlp_out, residual)`` so ``LlamaDecoder`` can fuse the block-boundary
+residual add with the next block's ``input_layernorm``. See ``Qwen3Block`` for
+the full rationale.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ class LlamaBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
         cos: torch.Tensor,
         sin: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
@@ -30,43 +36,33 @@ class LlamaBlock(nn.Module):
         position_ids: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         packed = cu_seqlens is not None
 
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        if packed:
-            hidden_states = self.self_attn.forward_packed(hidden_states, cos, sin, position_ids, cu_seqlens, max_seqlen)
+        if residual is None:
+            attn_in = self.input_layernorm(hidden_states)
+            residual = hidden_states
         else:
-            hidden_states = self.self_attn(hidden_states, cos, sin, attention_mask)
+            attn_in, residual = _residual_rms_norm(
+                residual,
+                hidden_states,
+                self.input_layernorm.weight,
+                self.input_layernorm.eps,
+            )
 
-        # Fused residual add + post-attention RMSNorm (pre-MLP norm)
-        hidden_states, residual = _residual_rms_norm(
+        if packed:
+            attn_out = self.self_attn.forward_packed(
+                attn_in, cos, sin, position_ids, cu_seqlens, max_seqlen
+            )
+        else:
+            attn_out = self.self_attn(attn_in, cos, sin, attention_mask)
+
+        mlp_in, residual = _residual_rms_norm(
             residual,
-            hidden_states,
+            attn_out,
             self.post_attention_layernorm.weight,
             self.post_attention_layernorm.eps,
         )
 
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-
-        return hidden_states
-
-    def forward_packed(
-        self,
-        hidden_states: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        position_ids: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-    ) -> torch.Tensor:
-        return self(
-            hidden_states,
-            cos,
-            sin,
-            position_ids=position_ids,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
+        mlp_out = self.mlp(mlp_in)
+        return mlp_out, residual

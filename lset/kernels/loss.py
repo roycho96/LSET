@@ -895,9 +895,11 @@ def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=Fa
     k_cont = k.contiguous()
     labels_cont = labels.contiguous()
 
-    # Initialize dq, dk to fp32 zeros. Kernels use load-add-store pattern, so zero init is required
-    dq = torch.zeros(q_cont.shape, device=q_cont.device, dtype=torch.float32)
-    dk = torch.zeros(k_cont.shape, device=k_cont.device, dtype=torch.float32)
+    # dq, dk allocated as empty — Triton autotune's reset_to_zero=["dQ"]/["dK"] on
+    # _dq_bwd_kernel/_dk_bwd_kernel zeros these in the kernel prologue, so an
+    # explicit zero-init here would be a redundant aten::zero_ launch.
+    dq = torch.empty(q_cont.shape, device=q_cont.device, dtype=torch.float32)
+    dk = torch.empty(k_cont.shape, device=k_cont.device, dtype=torch.float32)
 
     ref_lse_c = ref_lse.contiguous()
     aux_c = aux.contiguous()

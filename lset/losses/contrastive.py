@@ -1,7 +1,29 @@
-"""Label-matrix-aware contrastive loss supporting multi-positive and soft labels."""
+"""Label-matrix-aware contrastive loss supporting multi-positive and soft labels.
+
+Two objectives live here:
+
+- Hard labels (``scores=None``): multi-positive InfoNCE.
+    ``loss = -mean_pos(sim) + logsumexp(sim over non-ignore)``
+- Soft labels (``scores`` given): soft-label cross-entropy.
+    ``loss = logsumexp(sim) - sum(normalized_target * sim)``
+    This is the mathematically correct soft CE (H(target, pred_softmax))
+    — not ``softmax(teacher_scores/τ)`` against predictions, which is a
+    different objective.
+
+Queries with no valid columns (all -1) are dropped from the mean. An
+all-ignored batch returns a grad-carrying zero to keep the training loop
+from NaN-ing.
+"""
+
+from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+
+
+def _zero_like(q: torch.Tensor) -> torch.Tensor:
+    """Grad-carrying scalar zero on the same device/dtype as ``q``."""
+    return (q.sum() * 0.0).to(q.dtype)
 
 
 def contrastive_loss(
@@ -11,43 +33,48 @@ def contrastive_loss(
     temperature: float = 0.02,
     scores: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Contrastive loss with label matrix.
+    """Contrastive loss with a (Q, K) label matrix.
 
     Args:
         query_embeds: (Q, D) normalized query embeddings.
-        doc_embeds: (K, D) normalized doc embeddings.
-        labels: (Q, K) — 1=positive, 0=negative/in-batch-neg, -1=ignore.
-        temperature: Scaling temperature.
-        scores: (Q, K) optional soft target scores for distillation.
+        doc_embeds:   (K, D) normalized doc embeddings.
+        labels:       (Q, K) — ``1`` positive, ``0`` negative/in-batch-neg,
+                      ``-1`` ignore.
+        temperature:  scalar or 0-dim tensor (``1/scale``).
+        scores:       (Q, K) optional soft targets for distillation.
 
     Returns:
         Scalar loss.
     """
-    sim = query_embeds @ doc_embeds.T / temperature  # (Q, K)
+    sim = (query_embeds @ doc_embeds.T) / temperature  # (Q, K)
+    ignore_mask = labels < 0                           # True where labels == -1
+    valid_mask = ~ignore_mask
 
     if scores is not None:
-        # Soft label cross-entropy
-        mask = labels >= 0
-        # Replace -inf scores with very negative value for softmax
-        safe_scores = scores.clone()
-        safe_scores[~mask] = float("-inf")
-        target_dist = F.softmax(safe_scores / temperature, dim=-1)
-        log_probs = F.log_softmax(sim.masked_fill(~mask, float("-inf")), dim=-1)
-        loss = -(target_dist * log_probs * mask.float()).sum(dim=-1)
-        loss = loss / mask.float().sum(dim=-1).clamp(min=1)
-        return loss.mean()
+        # Soft-label CE — target is `scores` restricted to non-ignore columns.
+        target = scores.to(sim.dtype).masked_fill(ignore_mask, 0.0)
+        target_sum = target.sum(dim=-1)                # (Q,)
+        valid_query = (target_sum > 0) & valid_mask.any(dim=-1)
+        if not valid_query.any():
+            return _zero_like(query_embeds)
+
+        target = target / target_sum.clamp(min=1e-12).unsqueeze(-1)  # rows sum to 1
+        logits = sim.masked_fill(ignore_mask, float("-inf"))
+        log_denom = torch.logsumexp(logits, dim=-1)                  # (Q,)
+        per_q = log_denom - (target * sim).sum(dim=-1)               # (Q,)
+        return per_q[valid_query].mean()
 
     # Multi-positive InfoNCE
-    pos_mask = (labels == 1).float()
-    neg_mask = (labels >= 0).float()  # pos + neg, exclude ignore
+    pos_mask = labels == 1
+    num_pos = pos_mask.sum(dim=-1)
+    valid_query = (num_pos > 0) & valid_mask.any(dim=-1)
+    if not valid_query.any():
+        return _zero_like(query_embeds)
 
-    # Log-sum-exp over all non-ignored docs (denominator)
-    sim_masked = sim.masked_fill(neg_mask == 0, float("-inf"))
-    log_denom = torch.logsumexp(sim_masked, dim=-1)  # (Q,)
+    logits = sim.masked_fill(ignore_mask, float("-inf"))
+    log_denom = torch.logsumexp(logits, dim=-1)                       # (Q,)
 
-    # Average positive similarity per query (numerator)
-    num_pos = pos_mask.sum(dim=-1).clamp(min=1)
-    pos_sum = (sim * pos_mask).sum(dim=-1)
-
-    loss = -pos_sum / num_pos + log_denom
-    return loss.mean()
+    pos_sum = (sim * pos_mask.to(sim.dtype)).sum(dim=-1)
+    num_pos_safe = num_pos.clamp(min=1).to(sim.dtype)
+    per_q = -pos_sum / num_pos_safe + log_denom                       # (Q,)
+    return per_q[valid_query].mean()

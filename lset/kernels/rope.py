@@ -1,250 +1,196 @@
-"""Fused Rotary Position Embedding (RoPE) — single Triton kernel.
+"""Fused Q+K Rotary Position Embedding — single Triton kernel.
 
-Standard RoPE (_rotate_half + apply):
-  x1, x2 = x[..., :D//2], x[..., D//2:]    # 2 slices
-  rotated = cat(-x2, x1)                     # 1 cat + 1 neg
-  out = x * cos + rotated * sin              # 2 mul + 1 add
-  → 6 kernel launches for Q, same for K = 12 launches per layer
+One program per token handles Q and K together. ``cos/sin`` are loaded once
+from HBM and shared across all Q heads (``n_qh``) and K heads (``n_kh``) via
+a 2D register tile ``(pad_n_qh, pad_hd/2)``.
 
-Fused RoPE:
-  One kernel reads x, cos, sin; computes both halves in-place; writes out.
-  For Q and K simultaneously: 2 kernel launches per layer instead of 12.
+The kernel writes in-place into a freshly-allocated contiguous buffer (the
+output of ``transpose(1, 2).contiguous()`` or ``clone()``). Callers never see
+their input mutated — we always own the buffer we write to. This matches
+the Liger-Kernel pattern and avoids the extra ``empty_like`` + post-kernel
+``contiguous()`` round-trip used by the previous LSET wrapper.
 
-Savings: 28 layers × 10 fewer launches = 280 fewer kernel launches per forward pass.
+Shape support (cos/sin is broadcast along the leading dims via ``pid % S_cos``):
+  - 4D padded:  q/k ``(B, H, S, D)``, cos/sin ``(1, 1, S, D)``
+  - 3D packed:  q/k ``(T, H, D)``,   cos/sin ``(T, 1, D)``
 """
+
+from __future__ import annotations
 
 import torch
 import triton
 import triton.language as tl
 
-# Fixed config — D=128 (head_dim) is constant, so no need for autotune.
-# Autotune with variable T causes recompilation for every packed batch.
-_BLOCK_HD = 128  # Process full HALF_D (64) in one tile for D=128
-
-
-# =============================================================================
-# Forward Kernel
-# =============================================================================
+from torch import Tensor
 
 
 @triton.jit
-def _rope_fwd_kernel(
-    X,  # [T, H, D] input (Q or K)
-    Cos,  # cos values, [T, D] or [T, HALF_D]
-    Sin,  # sin values
-    Y,  # [T, H, D] output
-    T,  # total tokens
-    H,  # number of heads
-    D: tl.constexpr,  # head dimension (full)
-    HALF_D: tl.constexpr,  # D // 2
-    stride_xt,  # X token stride
-    stride_xh,  # X head stride
-    stride_ct,  # Cos token stride
-    stride_yt,  # Y token stride
-    stride_yh,  # Y head stride
-    BLOCK_HD: tl.constexpr,
+def _rope_qk_kernel(
+    Q, q_token_stride,
+    K, k_token_stride,
+    COS, SIN, cos_token_stride,
+    N,
+    S_COS,
+    n_qh: tl.constexpr,
+    n_kh: tl.constexpr,
+    hd: tl.constexpr,
+    pad_n_qh: tl.constexpr,
+    pad_n_kh: tl.constexpr,
+    pad_hd_half: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
 ):
-    """Apply RoPE: y1 = x1*c - x2*s, y2 = x2*c + x1*s"""
-    pid = tl.program_id(0)
-    t_idx = pid // H
-    h_idx = pid % H
+    """Combined Q/K RoPE, in-place on Q and K.
 
-    if t_idx >= T:
+      Forward:  y1 = x1*c − x2*s, y2 = x1*s + x2*c
+      Backward: dx1 = dy1*c + dy2*s, dx2 = −dy1*s + dy2*c
+    """
+    pid = tl.program_id(0).to(tl.int64)
+    if pid >= N:
         return
 
-    x_base = t_idx * stride_xt + h_idx * stride_xh
-    y_base = t_idx * stride_yt + h_idx * stride_yh
-    c_base = t_idx * stride_ct
+    tok_cos = pid % S_COS
+    c_base = COS + tok_cos * cos_token_stride
+    s_base = SIN + tok_cos * cos_token_stride
 
-    for start_d in range(0, HALF_D, BLOCK_HD):
-        offs_d = start_d + tl.arange(0, BLOCK_HD)
-        mask = offs_d < HALF_D
+    dh = tl.arange(0, pad_hd_half)
+    dh_mask = dh < (hd // 2)
+    cos_row = tl.load(c_base + dh, mask=dh_mask, other=0.0)
+    sin_row = tl.load(s_base + dh, mask=dh_mask, other=0.0)
 
-        x1 = tl.load(X + x_base + offs_d, mask=mask, other=0.0).to(tl.float32)
-        x2 = tl.load(X + x_base + HALF_D + offs_d, mask=mask, other=0.0).to(tl.float32)
+    # --- Q ---
+    q_base = Q + pid * q_token_stride
+    q_row = tl.arange(0, pad_n_qh)[:, None]
+    q_col = dh[None, :]
+    q_off = q_row * hd + q_col
+    q_mask = (q_row < n_qh) & (q_col < (hd // 2))
 
-        c = tl.load(Cos + c_base + offs_d, mask=mask, other=1.0).to(tl.float32)
-        s = tl.load(Sin + c_base + offs_d, mask=mask, other=0.0).to(tl.float32)
+    q1 = tl.load(q_base + q_off, mask=q_mask, other=0.0).to(sin_row.dtype)
+    q2 = tl.load(q_base + q_off + (hd // 2), mask=q_mask, other=0.0).to(sin_row.dtype)
+    if BACKWARD_PASS:
+        q1_new = q1 * cos_row + q2 * sin_row
+        q2_new = -q1 * sin_row + q2 * cos_row
+    else:
+        q1_new = q1 * cos_row - q2 * sin_row
+        q2_new = q1 * sin_row + q2 * cos_row
+    tl.store(q_base + q_off, q1_new, mask=q_mask)
+    tl.store(q_base + q_off + (hd // 2), q2_new, mask=q_mask)
 
-        y1 = x1 * c - x2 * s
-        y2 = x2 * c + x1 * s
+    # --- K ---
+    k_base = K + pid * k_token_stride
+    k_row = tl.arange(0, pad_n_kh)[:, None]
+    k_col = dh[None, :]
+    k_off = k_row * hd + k_col
+    k_mask = (k_row < n_kh) & (k_col < (hd // 2))
 
-        tl.store(Y + y_base + offs_d, y1.to(x1.dtype), mask=mask)
-        tl.store(Y + y_base + HALF_D + offs_d, y2.to(x1.dtype), mask=mask)
-
-
-# =============================================================================
-# Backward Kernel
-# =============================================================================
-
-
-@triton.jit
-def _rope_bwd_kernel(
-    GradY,  # [T, H, D]
-    Cos,
-    Sin,
-    GradX,  # [T, H, D]
-    T,
-    H,
-    D: tl.constexpr,
-    HALF_D: tl.constexpr,
-    stride_gyt,
-    stride_gyh,
-    stride_ct,
-    stride_gxt,
-    stride_gxh,
-    BLOCK_HD: tl.constexpr,
-):
-    """Backward: dx1 = gy1*c + gy2*s, dx2 = -gy1*s + gy2*c"""
-    pid = tl.program_id(0)
-    t_idx = pid // H
-    h_idx = pid % H
-
-    if t_idx >= T:
-        return
-
-    gy_base = t_idx * stride_gyt + h_idx * stride_gyh
-    gx_base = t_idx * stride_gxt + h_idx * stride_gxh
-    c_base = t_idx * stride_ct
-
-    for start_d in range(0, HALF_D, BLOCK_HD):
-        offs_d = start_d + tl.arange(0, BLOCK_HD)
-        mask = offs_d < HALF_D
-
-        gy1 = tl.load(GradY + gy_base + offs_d, mask=mask, other=0.0).to(tl.float32)
-        gy2 = tl.load(GradY + gy_base + HALF_D + offs_d, mask=mask, other=0.0).to(tl.float32)
-
-        c = tl.load(Cos + c_base + offs_d, mask=mask, other=1.0).to(tl.float32)
-        s = tl.load(Sin + c_base + offs_d, mask=mask, other=0.0).to(tl.float32)
-
-        gx1 = gy1 * c + gy2 * s
-        gx2 = -gy1 * s + gy2 * c
-
-        tl.store(GradX + gx_base + offs_d, gx1.to(gy1.dtype), mask=mask)
-        tl.store(GradX + gx_base + HALF_D + offs_d, gx2.to(gy1.dtype), mask=mask)
+    k1 = tl.load(k_base + k_off, mask=k_mask, other=0.0).to(sin_row.dtype)
+    k2 = tl.load(k_base + k_off + (hd // 2), mask=k_mask, other=0.0).to(sin_row.dtype)
+    if BACKWARD_PASS:
+        k1_new = k1 * cos_row + k2 * sin_row
+        k2_new = -k1 * sin_row + k2 * cos_row
+    else:
+        k1_new = k1 * cos_row - k2 * sin_row
+        k2_new = k1 * sin_row + k2 * cos_row
+    tl.store(k_base + k_off, k1_new, mask=k_mask)
+    tl.store(k_base + k_off + (hd // 2), k2_new, mask=k_mask)
 
 
-# =============================================================================
-# Python Wrappers
-# =============================================================================
+def _launch_rope_qk(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor, *, backward: bool):
+    """Run ``_rope_qk_kernel`` over Q and K in-place on a fresh buffer.
+
+    For 4D ``(B, H, S, D)`` we first ``transpose(1, 2).contiguous()`` to the
+    physical ``(B, S, H, D)`` layout — ``transpose`` makes the tensor
+    non-contiguous so ``contiguous()`` always allocates a fresh buffer we
+    own. For 3D ``(N, H, D)`` inputs that are already contiguous, we clone
+    so we never mutate the caller's tensor.
+    """
+    is_padded = q.dim() == 4
+    if is_padded:
+        B, H_q, S, D = q.shape
+        H_k = k.shape[1]
+        q_work = q.transpose(1, 2).contiguous()  # fresh (B, S, H_q, D)
+        k_work = k.transpose(1, 2).contiguous()
+        N = B * S
+    else:
+        N, H_q, D = q.shape
+        H_k = k.shape[1]
+        q_work = q.contiguous()
+        if q_work is q:
+            q_work = q_work.clone()
+        k_work = k.contiguous()
+        if k_work is k:
+            k_work = k_work.clone()
+
+    cos2d = cos.reshape(-1, cos.shape[-1]).contiguous()
+    sin2d = sin.reshape(-1, sin.shape[-1]).contiguous()
+    S_cos = cos2d.shape[0]
+
+    # Token stride is H*D for both layouts: stride(1) on (B, S, H, D) contig,
+    # stride(0) on (N, H, D) contig.
+    q_token_stride = q_work.stride(1) if is_padded else q_work.stride(0)
+    k_token_stride = k_work.stride(1) if is_padded else k_work.stride(0)
+
+    pad_hd_half = max(16, triton.next_power_of_2(D // 2))
+    pad_n_qh = max(1, triton.next_power_of_2(H_q))
+    pad_n_kh = max(1, triton.next_power_of_2(H_k))
+
+    _rope_qk_kernel[(N,)](
+        q_work, q_token_stride,
+        k_work, k_token_stride,
+        cos2d, sin2d, cos2d.stride(0),
+        N, S_cos,
+        H_q, H_k, D,
+        pad_n_qh, pad_n_kh, pad_hd_half,
+        BACKWARD_PASS=backward,
+        num_warps=4,
+    )
+
+    if is_padded:
+        # Return the transposed view — downstream SDPA/FA handles non-contig
+        # input without extra copies. If a caller truly needs contig they can
+        # call .contiguous() themselves, matching Liger-Kernel's API.
+        return q_work.transpose(1, 2), k_work.transpose(1, 2)
+    return q_work, k_work
 
 
-def _get_cos_sin_2d(cos, sin):
-    """Normalize cos/sin to [T, D] shape."""
-    if cos.dim() == 4:
-        # Padded: [1, 1, S, D] → [S, D]
-        return cos.squeeze(0).squeeze(0).contiguous(), sin.squeeze(0).squeeze(0).contiguous()
-    if cos.dim() == 3:
-        # Packed: [T, 1, D] → [T, D]
-        return cos.squeeze(1).contiguous(), sin.squeeze(1).contiguous()
-    return cos.contiguous(), sin.contiguous()
+class FusedRoPEQK(torch.autograd.Function):
+    """Combined Q/K RoPE autograd Function.
 
-
-class FusedRoPE(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, cos, sin):
-        is_padded = x.dim() == 4
-
-        if is_padded:
-            B, H, S, D = x.shape
-            x_3d = x.permute(0, 2, 1, 3).reshape(B * S, H, D).contiguous()
-            cos_2d, sin_2d = _get_cos_sin_2d(cos, sin)
-            cos_2d = cos_2d[:S].repeat(B, 1).contiguous()
-            sin_2d = sin_2d[:S].repeat(B, 1).contiguous()
-            T = B * S
-        else:
-            T, H, D = x.shape
-            x_3d = x.contiguous()
-            cos_2d, sin_2d = _get_cos_sin_2d(cos, sin)
-
-        HALF_D = D // 2
-        y = torch.empty_like(x_3d)
-
-        grid = (T * H,)
-        _rope_fwd_kernel[grid](
-            x_3d,
-            cos_2d,
-            sin_2d,
-            y,
-            T,
-            H,
-            D,
-            HALF_D,
-            x_3d.stride(0),
-            x_3d.stride(1),
-            cos_2d.stride(0),
-            y.stride(0),
-            y.stride(1),
-            BLOCK_HD=_BLOCK_HD,
-            num_warps=4,
-        )
-
-        ctx.save_for_backward(cos_2d, sin_2d)
-        ctx.shape_info = (is_padded, T, H, D)
-        if is_padded:
-            ctx.padded_shape = (B, H, S, D)
-            return y.reshape(B, S, H, D).permute(0, 2, 1, 3)
-        return y
+    Forward and backward both use ``_rope_qk_kernel`` with a ``BACKWARD_PASS``
+    flag — no saved activations beyond cos/sin.
+    """
 
     @staticmethod
-    def backward(ctx, grad_y):
-        cos_2d, sin_2d = ctx.saved_tensors
-        is_padded, T, H, D = ctx.shape_info
-        HALF_D = D // 2
+    def forward(ctx, q, k, cos, sin):
+        q_out, k_out = _launch_rope_qk(q, k, cos, sin, backward=False)
+        ctx.save_for_backward(cos, sin)
+        return q_out, k_out
 
-        if is_padded:
-            B, Hh, S, Dd = ctx.padded_shape
-            grad_y_3d = grad_y.permute(0, 2, 1, 3).reshape(B * S, H, D).contiguous()
-        else:
-            grad_y_3d = grad_y.contiguous()
+    @staticmethod
+    def backward(ctx, grad_q, grad_k):
+        cos, sin = ctx.saved_tensors
+        dq, dk = _launch_rope_qk(grad_q, grad_k, cos, sin, backward=True)
+        return dq, dk, None, None
 
-        grad_x = torch.empty_like(grad_y_3d)
-
-        grid = (T * H,)
-        _rope_bwd_kernel[grid](
-            grad_y_3d,
-            cos_2d,
-            sin_2d,
-            grad_x,
-            T,
-            H,
-            D,
-            HALF_D,
-            grad_y_3d.stride(0),
-            grad_y_3d.stride(1),
-            cos_2d.stride(0),
-            grad_x.stride(0),
-            grad_x.stride(1),
-            BLOCK_HD=_BLOCK_HD,
-            num_warps=4,
-        )
-
-        if is_padded:
-            grad_x = grad_x.reshape(B, S, H, D).permute(0, 2, 1, 3)
-        return grad_x, None, None
-
-
-# =============================================================================
-# Public API
-# =============================================================================
 
 _FUSED_ROPE_THRESHOLD = 128
 
 
-def fused_apply_rotary_pos_emb(q, k, cos, sin):
-    """Apply fused RoPE to both Q and K."""
-    q_out = FusedRoPE.apply(q, cos, sin)
-    k_out = FusedRoPE.apply(k, cos, sin)
-    return q_out, k_out
+def fused_apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
+    """Apply fused RoPE to Q and K in a single kernel launch."""
+    return FusedRoPEQK.apply(q, k, cos, sin)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin):
-    """RoPE with automatic Triton dispatch."""
-    T = q.shape[0] if q.dim() == 3 else q.shape[0] * q.shape[2]
-    if q.is_cuda and T >= _FUSED_ROPE_THRESHOLD:
-        return fused_apply_rotary_pos_emb(q, k, cos, sin)
+def apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
+    """RoPE with automatic Triton dispatch.
 
-    # Fallback
+    Falls back to the eager ``rotate_half`` formula on CPU or very small
+    inputs where the kernel launch overhead dominates.
+    """
+    if q.is_cuda:
+        T = q.shape[0] if q.dim() == 3 else q.shape[0] * q.shape[2]
+        if T >= _FUSED_ROPE_THRESHOLD:
+            return fused_apply_rotary_pos_emb(q, k, cos, sin)
+
     def _rotate_half(x):
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]

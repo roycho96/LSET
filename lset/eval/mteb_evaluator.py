@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 from lset.models.registry import detect_model_type
 from lset.models.registry import get_model_spec
-from lset.tasks.pooling import pool
+from lset.models.pooling import pool
 
 logger = logging.getLogger(__name__)
 

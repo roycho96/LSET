@@ -1,19 +1,14 @@
-"""Fused Residual-Add + LayerNorm — single Triton kernel for BERT/encoder post-norm.
+"""Fused Residual-Add + LayerNorm — single-pass Triton kernel.
 
-BERT post-norm pattern:
-  hidden = LayerNorm(residual + attn_out)
-
-Current (separate ops):
-  new_residual = residual + attn_out     # kernel 1
-  hidden = layer_norm(new_residual)      # kernel 2+
-
-Fused (1 kernel):
-  x_hat, new_residual = fused_residual_layer_norm(residual, attn_out, eps)
-  hidden = weight * x_hat + bias  (applied in Python for GradCache compat)
-
-Same design as FusedResidualRMSNorm but with LayerNorm (mean subtraction + variance).
-Weight and bias applied OUTSIDE the custom Function.
+Matches ``layernorm.py`` (single-pass + weight/bias fold + per-SM partial
+dW/dB) and ``residual_rmsnorm.py`` (fused residual add). Used by BERT /
+XLM-RoBERTa encoders and the LayerNorm variant of the block-boundary
+fusion.
 """
+
+from __future__ import annotations
+
+import math
 
 import torch
 import triton
@@ -21,253 +16,228 @@ import triton.language as tl
 
 from torch import Tensor
 
-# =============================================================================
-# Forward Kernel
-# =============================================================================
+try:
+    from triton.language.extra.libdevice import rsqrt as _rsqrt
+except ImportError:
+    try:
+        from triton.language.extra.cuda.libdevice import rsqrt as _rsqrt
+    except ImportError:
+        from triton.language.math import rsqrt as _rsqrt
+
+_MAX_FUSED_SIZE = 65536
+
+_TRITON_DTYPE = {
+    torch.float32: tl.float32,
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+    torch.float64: tl.float64,
+}
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
+def _calc_settings(n: int) -> tuple[int, int]:
+    BLOCK_SIZE = triton.next_power_of_2(n)
+    if BLOCK_SIZE > _MAX_FUSED_SIZE:
+        raise RuntimeError(f"Residual-LayerNorm feature dim {n} exceeds {_MAX_FUSED_SIZE}.")
+    if BLOCK_SIZE >= 32768:
+        num_warps = 32
+    elif BLOCK_SIZE >= 8192:
+        num_warps = 16
+    elif BLOCK_SIZE >= 2048:
+        num_warps = 8
+    else:
+        num_warps = 4
+    return BLOCK_SIZE, num_warps
+
+
 @triton.jit
 def _residual_layer_norm_fwd_kernel(
-    RESIDUAL,  # [N, D] residual input
-    ATTN_OUT,  # [N, D] attention/MLP output
-    Y,  # [N, D] normalized output (x_hat, WITHOUT weight/bias)
-    NEW_RESIDUAL,  # [N, D] residual + attn_out
-    MEAN,  # [N] row means for backward
-    RSTD,  # [N] reciprocal std for backward
-    N,
-    D,
-    stride_r,
-    stride_a,
-    stride_y,
-    stride_nr,
+    Y_ptr, Y_row_stride,
+    R_ptr, R_row_stride,
+    A_ptr, A_row_stride,
+    NR_ptr, NR_row_stride,
+    W_ptr,
+    B_ptr,
+    MEAN_ptr,
+    RSTD_ptr,
+    n_cols,
     eps,
-    BLOCK_D: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    """new_residual = r + a; y = w * layer_norm(new_residual) + b."""
+    row_idx = tl.program_id(0).to(tl.int64)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
     ACCUM_DTYPE: tl.constexpr = tl.float64 if USE_FP64 else tl.float32
 
-    # Pass 1: compute new_residual = residual + attn_out, accumulate sum for mean
-    row_sum = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        r = tl.load(RESIDUAL + row * stride_r + offs_d, mask=mask, other=0.0)
-        a = tl.load(ATTN_OUT + row * stride_a + offs_d, mask=mask, other=0.0)
-        nr = (r + a).to(ACCUM_DTYPE)
-        tl.store(NEW_RESIDUAL + row * stride_nr + offs_d, nr.to(r.dtype), mask=mask)
-        row_sum += tl.sum(nr)
+    r = tl.load(R_ptr + row_idx * R_row_stride + cols, mask=mask, other=0.0)
+    a = tl.load(A_ptr + row_idx * A_row_stride + cols, mask=mask, other=0.0)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+    b = tl.load(B_ptr + cols, mask=mask, other=0.0)
 
-    mean = row_sum / D
+    nr_dtype = r.dtype
+    nr_acc = r.to(ACCUM_DTYPE) + a.to(ACCUM_DTYPE)
+    tl.store(NR_ptr + row_idx * NR_row_stride + cols, nr_acc.to(nr_dtype), mask=mask)
 
-    # Pass 2: compute variance
-    var_sum = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        nr = tl.load(NEW_RESIDUAL + row * stride_nr + offs_d, mask=mask, other=0.0)
-        diff = nr.to(ACCUM_DTYPE) - mean
-        diff = tl.where(mask, diff, 0.0)
-        var_sum += tl.sum(diff * diff)
+    mean = tl.sum(nr_acc, axis=0) / n_cols
+    sum_sq = tl.sum(nr_acc * nr_acc, axis=0) / n_cols
+    var = sum_sq - mean * mean
+    var = tl.maximum(var, 0.0)
+    rstd = _rsqrt(var + eps)
 
-    var = var_sum / D
-    rstd = tl.math.rsqrt(var + eps)
+    tl.store(MEAN_ptr + row_idx, mean)
+    tl.store(RSTD_ptr + row_idx, rstd)
 
-    tl.store(MEAN + row, mean)
-    tl.store(RSTD + row, rstd)
-
-    # Pass 3: normalize
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        nr = tl.load(NEW_RESIDUAL + row * stride_nr + offs_d, mask=mask, other=0.0)
-        y = (nr.to(ACCUM_DTYPE) - mean) * rstd
-        tl.store(Y + row * stride_y + offs_d, y.to(nr.dtype), mask=mask)
+    x_hat = (nr_acc - mean) * rstd
+    y = x_hat.to(nr_dtype) * w + b
+    tl.store(Y_ptr + row_idx * Y_row_stride + cols, y, mask=mask)
 
 
-# =============================================================================
-# Backward Kernel
-# =============================================================================
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
 @triton.jit
 def _residual_layer_norm_bwd_kernel(
-    GRAD_Y,  # [N, D] upstream gradient (includes weight effect)
-    NEW_RESIDUAL,  # [N, D] saved from forward
-    MEAN,  # [N] row means from forward
-    RSTD,  # [N] reciprocal std from forward
-    GRAD_INPUT,  # [N, D] gradient for BOTH residual and attn_out
-    N,
-    D,
-    stride_gy,
-    stride_nr,
-    stride_gi,
-    BLOCK_D: tl.constexpr,
+    dY_ptr, dY_row_stride,
+    dR_ptr, dR_row_stride,
+    NR_ptr, NR_row_stride,
+    NR_dtype: tl.constexpr,
+    W_ptr,
+    MEAN_ptr,
+    RSTD_ptr,
+    dW_ptr, dW_row_stride,
+    dB_ptr, dB_row_stride,
+    n_rows, n_cols,
+    rows_per_program,
+    BLOCK_SIZE: tl.constexpr,
     USE_FP64: tl.constexpr = False,
 ):
-    """Backward for fused residual + LayerNorm.
-
-    The add has gradient 1 for both inputs.
-    dx = rstd * (gy - mean(gy) - x_hat * mean(x_hat * gy))
-    """
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    block_id = tl.program_id(0).to(tl.int64)
+    row_start = block_id * rows_per_program
+    row_end = tl.minimum((block_id + 1) * rows_per_program, n_rows)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
     ACCUM_DTYPE: tl.constexpr = tl.float64 if USE_FP64 else tl.float32
 
-    mean = tl.load(MEAN + row).to(ACCUM_DTYPE)
-    rstd = tl.load(RSTD + row).to(ACCUM_DTYPE)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=ACCUM_DTYPE)
+    dB_row = tl.zeros((BLOCK_SIZE,), dtype=ACCUM_DTYPE)
 
-    # Pass 1: compute mean(gy) and mean(x_hat * gy)
-    sum_gy = tl.zeros([], dtype=ACCUM_DTYPE)
-    sum_xhat_gy = tl.zeros([], dtype=ACCUM_DTYPE)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        nr = tl.load(NEW_RESIDUAL + row * stride_nr + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        gy = tl.load(GRAD_Y + row * stride_gy + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        x_hat = (nr - mean) * rstd
-        sum_gy += tl.sum(gy)
-        sum_xhat_gy += tl.sum(x_hat * gy)
-    mean_gy = sum_gy / D
-    mean_xhat_gy = sum_xhat_gy / D
+    for row_idx in range(row_start, row_end):
+        dy = tl.load(dY_ptr + row_idx * dY_row_stride + cols, mask=mask, other=0.0)
+        nr = tl.load(NR_ptr + row_idx * NR_row_stride + cols, mask=mask, other=0.0)
+        mean = tl.load(MEAN_ptr + row_idx)
+        rstd = tl.load(RSTD_ptr + row_idx)
 
-    # Pass 2: dx = rstd * (gy - mean_gy - x_hat * mean_xhat_gy)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        nr = tl.load(NEW_RESIDUAL + row * stride_nr + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        gy = tl.load(GRAD_Y + row * stride_gy + offs_d, mask=mask, other=0.0).to(ACCUM_DTYPE)
-        x_hat = (nr - mean) * rstd
-        gi = rstd * (gy - mean_gy - x_hat * mean_xhat_gy)
-        tl.store(GRAD_INPUT + row * stride_gi + offs_d, gi.to(gy.dtype), mask=mask)
+        nr_acc = nr.to(ACCUM_DTYPE)
+        x_hat = (nr_acc - mean) * rstd
 
+        m = (dy * w).to(ACCUM_DTYPE)
+        sum_m = tl.sum(m, axis=0) / n_cols
+        sum_m_xhat = tl.sum(m * x_hat, axis=0) / n_cols
+        dx = rstd * (m - sum_m - x_hat * sum_m_xhat)
 
-# =============================================================================
-# Python Wrappers
-# =============================================================================
+        dW_row += (dy * x_hat.to(NR_dtype)).to(ACCUM_DTYPE)
+        dB_row += dy.to(ACCUM_DTYPE)
+
+        tl.store(dR_ptr + row_idx * dR_row_stride + cols, dx.to(NR_dtype), mask=mask)
+
+    tl.store(dW_ptr + block_id * dW_row_stride + cols, dW_row, mask=mask)
+    tl.store(dB_ptr + block_id * dB_row_stride + cols, dB_row, mask=mask)
 
 
-def _residual_layer_norm_forward(residual: Tensor, attn_out: Tensor, eps: float):
-    orig_shape = residual.shape
-    D = orig_shape[-1]
-    residual_2d = residual.reshape(-1, D).contiguous()
-    attn_out_2d = attn_out.reshape(-1, D).contiguous()
-    N = residual_2d.shape[0]
+def _fwd(r: Tensor, a: Tensor, w: Tensor, b: Tensor, eps: float):
+    shape = r.shape
+    D = shape[-1]
+    r_2d = r.reshape(-1, D)
+    a_2d = a.reshape(-1, D)
+    if not r_2d.is_contiguous():
+        r_2d = r_2d.contiguous()
+    if not a_2d.is_contiguous():
+        a_2d = a_2d.contiguous()
+    N = r_2d.shape[0]
 
-    y = torch.empty_like(residual_2d)
-    new_residual = torch.empty_like(residual_2d)
-    stats_dtype = torch.float32 if residual.dtype != torch.float64 else torch.float64
-    mean = torch.empty(N, device=residual.device, dtype=stats_dtype)
-    rstd = torch.empty(N, device=residual.device, dtype=stats_dtype)
+    BLOCK_SIZE, num_warps = _calc_settings(D)
+    use_fp64 = r.dtype == torch.float64
+    stats_dtype = torch.float64 if use_fp64 else torch.float32
 
-    use_fp64 = residual.dtype == torch.float64
+    y = torch.empty_like(r_2d)
+    nr = torch.empty_like(r_2d)
+    mean = torch.empty(N, device=r.device, dtype=stats_dtype)
+    rstd = torch.empty(N, device=r.device, dtype=stats_dtype)
+
     _residual_layer_norm_fwd_kernel[(N,)](
-        residual_2d,
-        attn_out_2d,
-        y,
-        new_residual,
-        mean,
-        rstd,
-        N,
-        D,
-        residual_2d.stride(0),
-        attn_out_2d.stride(0),
-        y.stride(0),
-        new_residual.stride(0),
-        eps,
+        y, y.stride(0),
+        r_2d, r_2d.stride(0),
+        a_2d, a_2d.stride(0),
+        nr, nr.stride(0),
+        w, b,
+        mean, rstd,
+        D, eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
         USE_FP64=use_fp64,
     )
-    return y.reshape(orig_shape), new_residual.reshape(orig_shape), mean, rstd
+    return y.view(shape), nr.view(shape), mean, rstd, BLOCK_SIZE, num_warps
 
 
-def _residual_layer_norm_backward(
-    grad_y: Tensor,
-    new_residual: Tensor,
-    mean: Tensor,
-    rstd: Tensor,
-):
-    orig_shape = grad_y.shape
-    D = orig_shape[-1]
-    grad_y_2d = grad_y.reshape(-1, D).contiguous()
-    nr_2d = new_residual.reshape(-1, D).contiguous()
-    N = nr_2d.shape[0]
+def _bwd(grad_y, nr_2d, w, mean, rstd, BLOCK_SIZE, num_warps):
+    shape = grad_y.shape
+    D = shape[-1]
+    grad_y_2d = grad_y.reshape(-1, D)
+    if not grad_y_2d.is_contiguous():
+        grad_y_2d = grad_y_2d.contiguous()
+    nr_2d = nr_2d.reshape(-1, D)
+    if not nr_2d.is_contiguous():
+        nr_2d = nr_2d.contiguous()
+    N = grad_y_2d.shape[0]
 
-    grad_input = torch.empty_like(nr_2d)
-    use_fp64 = grad_y.dtype == torch.float64
-    _residual_layer_norm_bwd_kernel[(N,)](
-        grad_y_2d,
-        nr_2d,
-        mean,
-        rstd,
-        grad_input,
-        N,
-        D,
-        grad_y_2d.stride(0),
-        nr_2d.stride(0),
-        grad_input.stride(0),
+    sm_count = torch.cuda.get_device_properties(nr_2d.device).multi_processor_count
+    rows_per_program = math.ceil(N / sm_count)
+
+    use_fp64 = nr_2d.dtype == torch.float64
+    accum_dtype = torch.float64 if use_fp64 else torch.float32
+    d_input = torch.empty_like(grad_y_2d)
+    _dW = torch.empty((sm_count, D), dtype=accum_dtype, device=w.device)
+    _dB = torch.empty((sm_count, D), dtype=accum_dtype, device=w.device)
+
+    _residual_layer_norm_bwd_kernel[(sm_count,)](
+        grad_y_2d, grad_y_2d.stride(0),
+        d_input, d_input.stride(0),
+        nr_2d, nr_2d.stride(0),
+        _TRITON_DTYPE[nr_2d.dtype],
+        w,
+        mean, rstd,
+        _dW, _dW.stride(0),
+        _dB, _dB.stride(0),
+        N, D,
+        rows_per_program,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
         USE_FP64=use_fp64,
     )
-    return grad_input.reshape(orig_shape)
-
-
-# =============================================================================
-# Autograd Function
-# =============================================================================
+    dw = _dW.sum(dim=0).to(w.dtype)
+    db = _dB.sum(dim=0).to(w.dtype)
+    return d_input.view(shape), dw, db
 
 
 class _FusedResidualLayerNormFn(torch.autograd.Function):
-    """Fused residual-add + LayerNorm.
-
-    Returns (x_hat, new_residual) where x_hat = layer_norm(residual + attn_out).
-    Weight/bias multiply happens outside in Python for clean GradCache gradients.
-    """
+    """Fused residual-add + weight/bias-folded LayerNorm."""
 
     @staticmethod
-    def forward(ctx, residual: Tensor, attn_out: Tensor, eps: float):
-        y, new_residual, mean, rstd = _residual_layer_norm_forward(
-            residual,
-            attn_out,
-            eps,
-        )
-        ctx.save_for_backward(new_residual, mean, rstd)
-        return y, new_residual
+    def forward(ctx, residual, attn_out, weight, bias, eps):
+        y, nr, mean, rstd, BLOCK_SIZE, num_warps = _fwd(residual, attn_out, weight, bias, eps)
+        ctx.save_for_backward(nr, weight, mean, rstd)
+        ctx.BLOCK_SIZE = BLOCK_SIZE
+        ctx.num_warps = num_warps
+        return y, nr
 
     @staticmethod
-    def backward(ctx, grad_y: Tensor, grad_new_residual: Tensor):
-        new_residual, mean, rstd = ctx.saved_tensors
-        grad_input = _residual_layer_norm_backward(grad_y, new_residual, mean, rstd)
-        # grad_new_residual passes through from downstream residual connections
-        grad_input = grad_input + grad_new_residual
-        # Both residual and attn_out get the same gradient (d/dx(a+b) = 1 for both)
-        return grad_input, grad_input, None
+    def backward(ctx, grad_y, grad_new_residual):
+        nr, weight, mean, rstd = ctx.saved_tensors
+        d_input, dw, db = _bwd(grad_y, nr, weight, mean, rstd, ctx.BLOCK_SIZE, ctx.num_warps)
+        d_input = d_input + grad_new_residual
+        return d_input, d_input.clone(), dw, db, None
 
-
-# =============================================================================
-# Public API
-# =============================================================================
 
 _FUSED_THRESHOLD = 256
 
@@ -279,15 +249,8 @@ def fused_residual_layer_norm(
     bias: Tensor,
     eps: float = 1e-5,
 ) -> tuple[Tensor, Tensor]:
-    """Fused residual-add + LayerNorm — force fused path.
-
-    Returns:
-        (normed_output, new_residual) where:
-        - normed_output = weight * layer_norm(residual + attn_out) + bias
-        - new_residual = residual + attn_out
-    """
-    x_hat, new_residual = _FusedResidualLayerNormFn.apply(residual, attn_out, eps)
-    return weight * x_hat.to(residual.dtype) + bias, new_residual
+    """Force Triton path. Returns ``(w * layer_norm(r + a) + b, r + a)``."""
+    return _FusedResidualLayerNormFn.apply(residual, attn_out, weight, bias, eps)
 
 
 def residual_layer_norm(
@@ -300,19 +263,15 @@ def residual_layer_norm(
     """Residual-add + LayerNorm with automatic Triton dispatch."""
     import os
 
+    D = residual.shape[-1]
     if (
         os.environ.get("LSET_DISABLE_FUSED_LAYERNORM") != "1"
         and residual.is_cuda
-        and residual.numel() // residual.shape[-1] >= _FUSED_THRESHOLD
+        and residual.numel() // D >= _FUSED_THRESHOLD
+        and triton.next_power_of_2(D) <= _MAX_FUSED_SIZE
     ):
         return fused_residual_layer_norm(residual, attn_out, weight, bias, eps)
-    # Fallback: standard PyTorch
+    # Fallback
     new_residual = residual + attn_out
-    normed = torch.nn.functional.layer_norm(
-        new_residual,
-        weight.shape,
-        weight,
-        bias,
-        eps,
-    )
+    normed = torch.nn.functional.layer_norm(new_residual, weight.shape, weight, bias, eps)
     return normed, new_residual

@@ -16,7 +16,7 @@ from lset.distributed.parallel import build_parallel_model
 from lset.distributed.parallel import setup_fsdp2
 from lset.models import get_model_spec
 from lset.tasks.bi_encoder import BiEncoderTask
-from lset.tasks.grad_cache import GradCacheWrapper
+from lset.train.grad_cache import GradCacheWrapper
 from lset.train.checkpoint import load_checkpoint
 from lset.train.checkpoint import save_checkpoint
 from lset.train.data.collator import EmbeddingCollator
@@ -338,8 +338,20 @@ class TrainingEngine:
                 labels = batch.get("labels")
                 scores = batch.get("scores")
 
+                is_ga_boundary = (step + 1) % self.grad_accum_steps == 0
                 if self.use_grad_cache:
-                    loss = self.grad_cache(self.model, query_batch, doc_batch, labels=labels, scores=scores)
+                    # GradCache runs its own per-minibatch backward; pass the GA
+                    # boundary flag so DDP/FSDP2/DeepSpeed runtimes sync on the
+                    # final micro-step only.
+                    loss = self.grad_cache(
+                        self.model,
+                        query_batch,
+                        doc_batch,
+                        labels=labels,
+                        scores=scores,
+                        is_ga_boundary=is_ga_boundary,
+                        grad_output=1.0 / self.grad_accum_steps,
+                    )
                 else:
                     neg_batch = None
                     if "neg" in batch:
@@ -349,7 +361,7 @@ class TrainingEngine:
                     scaled_loss = loss / self.grad_accum_steps
                     scaled_loss.backward()
 
-                if (step + 1) % self.grad_accum_steps == 0:
+                if is_ga_boundary:
                     if self.tp_size > 1:
                         _clip_grad_norm_tp(self.model, self.grad_clip)
                     else:

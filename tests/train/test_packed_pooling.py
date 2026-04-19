@@ -2,8 +2,8 @@
 
 import torch
 
-from lset.tasks.packed_pooling import packed_pool
-from lset.tasks.pooling import pool
+from lset.models.packed_pooling import packed_pool
+from lset.models.pooling import pool
 
 
 def test_last_token_packed_matches_padded():

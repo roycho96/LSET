@@ -70,9 +70,10 @@ class TestGemmaFusedResidualRMSNorm:
         cos = cos.to(torch.bfloat16)
         sin = sin.to(torch.bfloat16)
 
-        out = block(hidden, cos, sin)
-        assert out.shape == (B, S, 64)
-        assert not out.isnan().any()
+        mlp_out, residual = block(hidden, None, cos, sin)
+        full_out = residual + mlp_out
+        assert full_out.shape == (B, S, 64)
+        assert not full_out.isnan().any()
 
     def test_gemma_gradcheck(self, device):
         """Gradient flows correctly through Gemma fused path."""

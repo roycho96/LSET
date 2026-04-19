@@ -5,7 +5,7 @@ import torch
 from lset.models.decoder.qwen3.config import Qwen3Config
 from lset.models.decoder.qwen3.model import Qwen3Decoder
 from lset.tasks.bi_encoder import BiEncoderTask
-from lset.tasks.grad_cache import GradCacheWrapper
+from lset.train.grad_cache import GradCacheWrapper
 
 
 def _make_model_and_data(B=4, S=8):

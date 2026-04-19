@@ -1,20 +1,28 @@
-"""Fused RMSNorm — single Triton kernel replacing 6 separate PyTorch ops.
+"""Fused RMSNorm — single-pass Triton kernel.
 
-Standard RMSNorm:
-  x_f32 = x.float()                     # aten::copy_ (cast)
-  variance = x_f32.pow(2).mean(-1)       # aten::pow, aten::mean
-  x_f32 = x_f32 * rsqrt(variance + eps)  # aten::rsqrt, aten::mul
-  out = weight * x_f32.to(input_dtype)    # aten::mul, aten::copy_
+Layout follows Liger-Kernel (which in turn builds on Unsloth). Both are
+MIT/Apache licensed references; the techniques are ported, not copied
+verbatim.
 
-Fused:
-  One kernel: read x → compute rms → normalize → scale by weight → write out.
-  Forward: 1 read of x + 1 read of weight + 1 write = 2N*D + D reads, N*D write
-  Backward: dx and dw computed in separate kernels
+Key techniques (vs. the previous multi-pass LSET version):
+  1. ``BLOCK_SIZE = next_pow2(D)`` — the whole row lives in registers, so X
+     is read from HBM exactly once in forward and once in backward.
+  2. ``weight`` is multiplied inside the kernel store — no separate
+     ``aten::mul`` launch after the Function returns.
+  3. Backward uses a persistent ``(sm_count,)`` grid with ``rows_per_program``
+     rows per CTA and accumulates a per-program ``dW`` partial into an
+     ``(sm_count, D)`` fp32 buffer. A single ``.sum(0)`` reduction gives
+     ``dW`` — no Python-level autograd over ``weight * x_hat``.
+  4. ``rstd`` is computed in fp32 (llama-style casting); inputs/outputs stay
+     in their original dtype.
 
-Per-layer savings: 6 kernel launches → 1 (forward), same for backward.
-With 28 layers × 4 norms (input_ln, post_attn_ln, q_norm, k_norm) = 112 norm calls,
-this eliminates ~560 kernel launches per forward pass.
+Falls back to the eager PyTorch formula when CUDA is unavailable or D
+exceeds the kernel's ``_MAX_FUSED_SIZE``.
 """
+
+from __future__ import annotations
+
+import math
 
 import torch
 import triton
@@ -22,220 +30,208 @@ import triton.language as tl
 
 from torch import Tensor
 
-# =============================================================================
-# Forward Kernel
-# =============================================================================
+# Hardware rsqrt via libdevice — ~20% faster than 1.0 / tl.sqrt on Blackwell.
+try:
+    from triton.language.extra.libdevice import rsqrt as _rsqrt
+except ImportError:
+    try:
+        from triton.language.extra.cuda.libdevice import rsqrt as _rsqrt
+    except ImportError:
+        from triton.language.math import rsqrt as _rsqrt
+
+_MAX_FUSED_SIZE = 65536
+
+_TRITON_DTYPE = {
+    torch.float32: tl.float32,
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+    torch.float64: tl.float64,
+}
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
+def _calc_settings(n: int) -> tuple[int, int]:
+    """BLOCK_SIZE and num_warps — same schedule as Liger's ``calculate_settings``."""
+    BLOCK_SIZE = triton.next_power_of_2(n)
+    if BLOCK_SIZE > _MAX_FUSED_SIZE:
+        raise RuntimeError(f"RMSNorm feature dim {n} exceeds kernel limit ({_MAX_FUSED_SIZE}).")
+    if BLOCK_SIZE >= 32768:
+        num_warps = 32
+    elif BLOCK_SIZE >= 8192:
+        num_warps = 16
+    elif BLOCK_SIZE >= 2048:
+        num_warps = 8
+    else:
+        num_warps = 4
+    return BLOCK_SIZE, num_warps
+
+
 @triton.jit
 def _rms_norm_fwd_kernel(
-    X,  # [N, D] input
-    Y,  # [N, D] output (normalized, WITHOUT weight scaling)
-    Rstd,  # [N] reciprocal std (1/rms) for backward
-    N,  # number of rows
-    D,  # number of columns
-    stride_x,  # X row stride
-    stride_y,  # Y row stride
-    eps,  # epsilon
-    BLOCK_D: tl.constexpr,
+    Y_ptr, Y_row_stride,
+    X_ptr, X_row_stride,
+    W_ptr,
+    RSTD_ptr,
+    n_cols,
+    eps,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    """y = (x / sqrt(mean(x²) + eps)) * w, row-wise; saves ``rstd`` for backward."""
+    row_idx = tl.program_id(0).to(tl.int64)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
-    # Accumulate sum of squares in fp32
-    sum_sq = 0.0
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0)
-        x_f32 = x.to(tl.float32)
-        sum_sq += tl.sum(x_f32 * x_f32)
+    x = tl.load(X_ptr + row_idx * X_row_stride + cols, mask=mask, other=0.0)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
 
-    # RMS = sqrt(mean(x^2))
-    mean_sq = sum_sq / D
-    rstd = 1.0 / tl.sqrt(mean_sq + eps)
+    x_dtype = x.dtype
+    x_f32 = x.to(tl.float32)
+    mean_sq = tl.sum(x_f32 * x_f32, axis=0) / n_cols
+    rstd = _rsqrt(mean_sq + eps)
+    tl.store(RSTD_ptr + row_idx, rstd)
 
-    # Save rstd for backward
-    tl.store(Rstd + row, rstd)
-
-    # Normalize (no weight scaling — weight is applied via standard PyTorch mul
-    # so its gradient flows through normal autograd, avoiding AccumulateGrad fill_
-    # overhead in GradCache chunked backward)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0)
-        x_f32 = x.to(tl.float32)
-        y = x_f32 * rstd
-        tl.store(Y + row * stride_y + offs_d, y.to(x.dtype), mask=mask)
+    y = (x_f32 * rstd).to(x_dtype) * w
+    tl.store(Y_ptr + row_idx * Y_row_stride + cols, y, mask=mask)
 
 
-# =============================================================================
-# Backward Kernels
-# =============================================================================
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_D": 256}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 512}, num_warps=4, num_stages=1),
-        triton.Config({"BLOCK_D": 1024}, num_warps=8, num_stages=1),
-        triton.Config({"BLOCK_D": 2048}, num_warps=8, num_stages=1),
-    ],
-    key=["D"],
-)
 @triton.jit
 def _rms_norm_bwd_kernel(
-    GradY,  # [N, D] upstream gradient (already includes weight effect)
-    X,  # [N, D] input
-    Rstd,  # [N] reciprocal std from forward
-    GradX,  # [N, D] output: input gradient
-    N,
-    D,
-    stride_gy,
-    stride_x,
-    stride_gx,
-    BLOCK_D: tl.constexpr,
+    dY_ptr, dY_row_stride,
+    dX_ptr, dX_row_stride,
+    X_ptr, X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    RSTD_ptr,
+    dW_ptr, dW_row_stride,
+    n_rows, n_cols,
+    rows_per_program,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    """Compute dx for RMSNorm backward.
+    """dX computed row-locally; dW partial accumulated per-CTA."""
+    block_id = tl.program_id(0).to(tl.int64)
+    row_start = block_id * rows_per_program
+    row_end = tl.minimum((block_id + 1) * rows_per_program, n_rows)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
 
-    Forward: y = x * rstd (no weight — weight applied via standard PyTorch mul)
-    Backward: dx = rstd * (grad_y - x_hat * mean(x_hat * grad_y))
-    where x_hat = x * rstd
-    """
-    row = tl.program_id(0)
-    if row >= N:
-        return
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
-    rstd = tl.load(Rstd + row)
+    for row_idx in range(row_start, row_end):
+        dy = tl.load(dY_ptr + row_idx * dY_row_stride + cols, mask=mask, other=0.0)
+        x = tl.load(X_ptr + row_idx * X_row_stride + cols, mask=mask, other=0.0)
+        rstd = tl.load(RSTD_ptr + row_idx)
 
-    # Pass 1: dot = sum(x_hat * grad_y) / D
-    dot = 0.0
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0).to(tl.float32)
-        gy = tl.load(GradY + row * stride_gy + offs_d, mask=mask, other=0.0).to(tl.float32)
-        x_hat = x * rstd
-        dot += tl.sum(x_hat * gy)
-    dot = dot / D
+        x_f32 = x.to(tl.float32)
+        m = (dy * w).to(tl.float32)
+        dot_mx = tl.sum(m * x_f32, axis=0)
+        dx = rstd * m - (rstd * rstd * rstd / n_cols) * dot_mx * x_f32
 
-    # Pass 2: dx = rstd * (gy - x_hat * dot)
-    for start_d in range(0, D, BLOCK_D):
-        offs_d = start_d + tl.arange(0, BLOCK_D)
-        mask = offs_d < D
-        x = tl.load(X + row * stride_x + offs_d, mask=mask, other=0.0).to(tl.float32)
-        gy = tl.load(GradY + row * stride_gy + offs_d, mask=mask, other=0.0).to(tl.float32)
-        x_hat = x * rstd
-        gx = rstd * (gy - x_hat * dot)
-        tl.store(GradX + row * stride_gx + offs_d, gx.to(gy.dtype), mask=mask)
+        # dW partial: dy * (x * rstd) summed over rows held by this program.
+        dW_row += (dy * (x_f32 * rstd).to(X_dtype)).to(tl.float32)
+
+        tl.store(dX_ptr + row_idx * dX_row_stride + cols, dx.to(X_dtype), mask=mask)
+
+    tl.store(dW_ptr + block_id * dW_row_stride + cols, dW_row, mask=mask)
 
 
-# =============================================================================
-# Python Wrappers
-# =============================================================================
+def _rms_norm_forward(x: Tensor, w: Tensor, eps: float):
+    shape = x.shape
+    D = shape[-1]
+    x_2d = x.reshape(-1, D)
+    if not x_2d.is_contiguous():
+        x_2d = x_2d.contiguous()
+    N = x_2d.shape[0]
 
-
-def _rms_norm_forward(x: Tensor, eps: float):
-    orig_shape = x.shape
-    x_2d = x.reshape(-1, orig_shape[-1]).contiguous()
-    N, D = x_2d.shape
-
+    BLOCK_SIZE, num_warps = _calc_settings(D)
     y = torch.empty_like(x_2d)
     rstd = torch.empty(N, device=x.device, dtype=torch.float32)
 
     _rms_norm_fwd_kernel[(N,)](
-        x_2d,
-        y,
+        y, y.stride(0),
+        x_2d, x_2d.stride(0),
+        w,
         rstd,
-        N,
-        D,
-        x_2d.stride(0),
-        y.stride(0),
-        eps,
+        D, eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
     )
-    return y.reshape(orig_shape), rstd
+    return y.view(shape), x_2d, rstd, BLOCK_SIZE, num_warps
 
 
-def _rms_norm_backward(grad_y: Tensor, x: Tensor, rstd: Tensor):
-    orig_shape = grad_y.shape
-    D = orig_shape[-1]
-    grad_y_2d = grad_y.reshape(-1, D).contiguous()
-    x_2d = x.reshape(-1, D).contiguous()
-    N = x_2d.shape[0]
+def _rms_norm_backward(grad_y: Tensor, x_2d: Tensor, w: Tensor, rstd: Tensor, BLOCK_SIZE: int, num_warps: int):
+    shape = grad_y.shape
+    D = shape[-1]
+    grad_y_2d = grad_y.reshape(-1, D)
+    if not grad_y_2d.is_contiguous():
+        grad_y_2d = grad_y_2d.contiguous()
+    N = grad_y_2d.shape[0]
 
-    grad_x = torch.empty_like(x_2d)
-    _rms_norm_bwd_kernel[(N,)](
-        grad_y_2d,
-        x_2d,
+    sm_count = torch.cuda.get_device_properties(x_2d.device).multi_processor_count
+    rows_per_program = math.ceil(N / sm_count)
+
+    dx = torch.empty_like(grad_y_2d)
+    _dW = torch.empty((sm_count, D), dtype=torch.float32, device=w.device)
+
+    _rms_norm_bwd_kernel[(sm_count,)](
+        grad_y_2d, grad_y_2d.stride(0),
+        dx, dx.stride(0),
+        x_2d, x_2d.stride(0),
+        _TRITON_DTYPE[x_2d.dtype],
+        w,
         rstd,
-        grad_x,
-        N,
-        D,
-        grad_y_2d.stride(0),
-        x_2d.stride(0),
-        grad_x.stride(0),
+        _dW, _dW.stride(0),
+        N, D,
+        rows_per_program,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
     )
-
-    return grad_x.reshape(orig_shape)
-
-
-# =============================================================================
-# Autograd Function
-# =============================================================================
+    dW = _dW.sum(dim=0).to(w.dtype)
+    return dx.view(shape), dW
 
 
 class _FusedRMSNormFn(torch.autograd.Function):
-    """Fused RMSNorm without weight — weight is applied via standard PyTorch mul
-    so its gradient flows through normal autograd, avoiding AccumulateGrad
-    fill_ overhead in GradCache chunked backward."""
+    """Weight-folded RMSNorm; returns ``weight * rms_norm(x)`` directly.
+
+    Backward returns ``(dx, dw, None)``. ``dw`` is accumulated per-CTA then
+    reduced on host via ``.sum(0)`` — no separate ``aten::mul`` backward.
+    """
 
     @staticmethod
-    def forward(ctx, x: Tensor, eps: float):
-        y, rstd = _rms_norm_forward(x, eps)
-        ctx.save_for_backward(x, rstd)
+    def forward(ctx, x: Tensor, weight: Tensor, eps: float):
+        y, x_2d, rstd, BLOCK_SIZE, num_warps = _rms_norm_forward(x, weight, eps)
+        ctx.save_for_backward(x_2d, weight, rstd)
+        ctx.BLOCK_SIZE = BLOCK_SIZE
+        ctx.num_warps = num_warps
         return y
 
     @staticmethod
     def backward(ctx, grad_y: Tensor):
-        x, rstd = ctx.saved_tensors
-        grad_x = _rms_norm_backward(grad_y, x, rstd)
-        return grad_x, None
+        x_2d, weight, rstd = ctx.saved_tensors
+        dx, dw = _rms_norm_backward(grad_y, x_2d, weight, rstd, ctx.BLOCK_SIZE, ctx.num_warps)
+        return dx, dw, None
 
 
-# =============================================================================
-# Public API
-# =============================================================================
-
-_FUSED_RMSNORM_THRESHOLD = 256
+_FUSED_RMS_THRESHOLD = 256
 
 
 def fused_rms_norm(x: Tensor, weight: Tensor, eps: float = 1e-6) -> Tensor:
-    """Fused RMSNorm — force fused path.
-
-    Normalization is done in a single Triton kernel. Weight scaling is done
-    via standard PyTorch multiply so weight gradients flow through normal
-    autograd (avoids AccumulateGrad overhead in GradCache).
-    """
-    x_norm = _FusedRMSNormFn.apply(x, eps)
-    return weight * x_norm.to(x.dtype)
+    """Fused RMSNorm — force Triton path. ``y = weight * rms_norm(x)``."""
+    return _FusedRMSNormFn.apply(x, weight, eps)
 
 
 def rms_norm(x: Tensor, weight: Tensor, eps: float = 1e-6) -> Tensor:
     """RMSNorm with automatic Triton dispatch."""
-    if x.is_cuda and x.numel() // x.shape[-1] >= _FUSED_RMSNORM_THRESHOLD:
+    import os
+
+    D = x.shape[-1]
+    if (
+        os.environ.get("LSET_DISABLE_FUSED_RMSNORM") != "1"
+        and x.is_cuda
+        and x.numel() // D >= _FUSED_RMS_THRESHOLD
+        and triton.next_power_of_2(D) <= _MAX_FUSED_SIZE
+    ):
         return fused_rms_norm(x, weight, eps)
-    # Fallback: standard PyTorch
+    # Fallback: standard PyTorch.
     input_dtype = x.dtype
     x_f32 = x.float()
     variance = x_f32.pow(2).mean(-1, keepdim=True)

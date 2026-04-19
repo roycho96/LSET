@@ -3,13 +3,13 @@
 import torch
 import torch.nn as nn
 
-from lset.losses.cascade_infonce import cascade_infonce_loss
+from lset.losses.base import LogitScale
 from lset.losses.fused_contrastive import fused_contrastive_loss
 from lset.losses.infonce import infonce_loss
 from lset.losses.matryoshka import matryoshka_loss
-from lset.tasks.gather import gather_with_grad
-from lset.tasks.packed_pooling import packed_pool
-from lset.tasks.pooling import pool
+from lset.distributed.gather import gather_with_grad
+from lset.models.packed_pooling import packed_pool
+from lset.models.pooling import pool
 
 
 def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int, fill: float = 0.0) -> torch.Tensor:
@@ -44,6 +44,9 @@ class BiEncoderTask(nn.Module):
         temperature: float = 0.02,
         matryoshka_dims: list[int] | None = None,
         top_k: int | None = None,
+        learnable_scale: bool = False,
+        max_scale: float = 100.0,
+        # Unused; kept for back-compat with existing configs/CLI.
         cascade: bool = False,
         cascade_d_small: int = 64,
         cascade_K_prime: int = 256,
@@ -54,9 +57,13 @@ class BiEncoderTask(nn.Module):
         self.temperature = temperature
         self.matryoshka_dims = matryoshka_dims
         self.top_k = top_k
-        self.cascade = cascade
-        self.cascade_d_small = cascade_d_small
-        self.cascade_K_prime = cascade_K_prime
+
+        # Learnable CLIP-style inverse-temperature. When enabled, ``self.temperature``
+        # shadows to the current ``1/exp(log_scale).clamp()`` at forward time so
+        # downstream losses keep their scalar ``temperature`` arg unchanged.
+        self.logit_scale: LogitScale | None = None
+        if learnable_scale:
+            self.logit_scale = LogitScale.from_temperature(temperature, max_scale=max_scale, learnable=True)
 
     def encode(self, model: nn.Module, batch: dict) -> torch.Tensor:
         if "cu_seqlens" in batch:
@@ -102,6 +109,12 @@ class BiEncoderTask(nn.Module):
             n_emb = gather_with_grad(n_emb)
             d_emb = torch.cat([d_emb, n_emb], dim=0)
 
+        # When learnable scale is enabled, rebuild an effective temperature
+        # (``1/scale``) so the loss path threads gradient through ``logit_scale``.
+        temperature = self.temperature
+        if self.logit_scale is not None:
+            temperature = 1.0 / self.logit_scale()
+
         if labels is not None:
             # Label-matrix-aware path
             labels = labels.to(q_emb.device)
@@ -116,13 +129,13 @@ class BiEncoderTask(nn.Module):
             pco = pos_counts.to(q_emb.device) if pos_counts is not None else None
 
             if self.matryoshka_dims:
-                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature, labels)
+                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, temperature, labels)
             else:
                 loss = fused_contrastive_loss(
                     q_emb,
                     d_emb,
                     labels,
-                    self.temperature,
+                    temperature,
                     s,
                     pos_qi=pqi,
                     pos_di=pdi,
@@ -131,16 +144,8 @@ class BiEncoderTask(nn.Module):
         else:
             # Legacy: diagonal positive (backward compatible)
             if self.matryoshka_dims is not None:
-                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, self.temperature)
-            elif self.cascade:
-                loss = cascade_infonce_loss(
-                    q_emb,
-                    d_emb,
-                    self.temperature,
-                    d_small=self.cascade_d_small,
-                    K_prime=self.cascade_K_prime,
-                )
+                loss = matryoshka_loss(q_emb, d_emb, self.matryoshka_dims, temperature)
             else:
-                loss = infonce_loss(q_emb, d_emb, self.temperature, self.top_k)
+                loss = infonce_loss(q_emb, d_emb, temperature, self.top_k)
 
         return {"loss": loss, "query_embeds": q_emb.detach(), "doc_embeds": d_emb.detach()}

@@ -2,7 +2,7 @@
 
 import torch
 
-from lset.tasks.pooling import pool
+from lset.models.pooling import pool
 
 
 def test_last_token_pooling():

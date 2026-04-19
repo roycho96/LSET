@@ -1,40 +1,36 @@
 """InfoNCE (NT-Xent) contrastive loss with optional top-K truncation."""
 
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 
 
 def infonce_loss(
-    query_embeds: torch.Tensor, doc_embeds: torch.Tensor, temperature: float = 0.02, top_k: int | None = None
+    query_embeds: torch.Tensor,
+    doc_embeds: torch.Tensor,
+    temperature: float = 0.02,
+    top_k: int | None = None,
 ) -> torch.Tensor:
-    """Compute InfoNCE loss for contrastive learning.
+    """Diagonal InfoNCE with optional hard-negative truncation.
 
-    Positives are along the diagonal (query[i] matches doc[i]).
+    Positives are along the diagonal (``query[i]`` matches ``doc[i]``).
+    When ``0 < top_k < B - 1``, the softmax denominator uses only the
+    positive plus the top-K hardest negatives per query.
 
-    When ``top_k`` is set and ``top_k < B - 1``, uses truncated InfoNCE:
-    only the top-K hardest negatives (plus the positive) participate in the
-    softmax denominator.  Phase 0 showed gradient cosine > 0.9997 at K=64,
-    τ=0.02 — making this a lossless approximation for training.
-
-    Args:
-        query_embeds: [B, D] normalized query embeddings.
-        doc_embeds: [B, D] normalized document embeddings.
-        temperature: Temperature scaling factor.
-        top_k: If set, keep only top-K negatives per query.  None or 0 uses
-            all negatives (standard InfoNCE).
-
-    Returns:
-        Scalar loss tensor.
+    Returns a grad-carrying zero if the batch is empty.
     """
-    sim = torch.matmul(query_embeds, doc_embeds.t()) / temperature  # [B, B]
-    B = sim.size(0)
+    B = query_embeds.shape[0]
+    if B == 0:
+        return (query_embeds.sum() * 0.0).to(query_embeds.dtype)
+
+    sim = (query_embeds @ doc_embeds.t()) / temperature  # (B, B)
 
     if top_k and 0 < top_k < B - 1:
-        # Truncated InfoNCE: softmax over {positive} ∪ {top-K negatives}
-        pos_sim = sim.diagonal().unsqueeze(1)  # (B, 1)
+        pos_sim = sim.diagonal().unsqueeze(1)            # (B, 1)
         sim_masked = sim.clone()
         sim_masked.fill_diagonal_(float("-inf"))
-        topk_sims, _ = sim_masked.topk(top_k, dim=1)  # (B, K)
+        topk_sims, _ = sim_masked.topk(top_k, dim=1)     # (B, K)
         logits = torch.cat([pos_sim, topk_sims], dim=1)  # (B, K+1)
         labels = torch.zeros(B, dtype=torch.long, device=sim.device)
         return F.cross_entropy(logits, labels)

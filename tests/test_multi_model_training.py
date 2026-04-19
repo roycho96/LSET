@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from lset.models import get_model_spec
-from lset.tasks.pooling import pool
+from lset.models.pooling import pool
 
 
 def _train_model(model_name: str, model_path: str, n_steps: int = 10):

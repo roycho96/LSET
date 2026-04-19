@@ -134,7 +134,7 @@ class TestTritonSegmentMean:
 
     def test_packed_pool_dispatcher_uses_triton(self, device):
         """packed_pool routes mean pooling to Triton kernel on CUDA."""
-        from lset.tasks.packed_pooling import packed_pool
+        from lset.models.packed_pooling import packed_pool
 
         T, H = 128, 256
         hidden = torch.randn(T, H, device=device, dtype=torch.bfloat16)

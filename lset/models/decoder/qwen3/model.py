@@ -78,9 +78,13 @@ class Qwen3Decoder(nn.Module):
         if attention_mask is not None:
             causal_mask = self._make_causal_mask(attention_mask, cos.dtype, device)
 
+        residual: torch.Tensor | None = None
         for layer in self.layers:
-            hidden_states = layer(hidden_states, cos, sin, causal_mask)
+            hidden_states, residual = layer(hidden_states, residual, cos, sin, causal_mask)
 
+        # Close the residual loop left open by the last block so block
+        # boundaries can fuse ``residual + mlp_out`` with ``input_layernorm``.
+        hidden_states = residual + hidden_states
         hidden_states = self.norm(hidden_states)
 
         # When SequenceParallel is active, hidden_states is a Shard(1) DTensor.
@@ -112,9 +116,11 @@ class Qwen3Decoder(nn.Module):
         cos = cos.squeeze(0).squeeze(0).to(hidden_states.dtype)  # (max_seqlen, head_dim)
         sin = sin.squeeze(0).squeeze(0).to(hidden_states.dtype)
 
+        residual: torch.Tensor | None = None
         for layer in self.layers:
-            hidden_states = layer(
+            hidden_states, residual = layer(
                 hidden_states,
+                residual,
                 cos,
                 sin,
                 position_ids=position_ids,
@@ -122,6 +128,7 @@ class Qwen3Decoder(nn.Module):
                 max_seqlen=max_seqlen,
             )
 
+        hidden_states = residual + hidden_states
         hidden_states = self.norm(hidden_states)
 
         result: dict[str, torch.Tensor] = {"hidden_states": hidden_states}
