@@ -11,16 +11,7 @@ from lset.models.decoder.qwen3.mlp import Qwen3MLP
 
 
 class Qwen3Block(nn.Module):
-    """Qwen3 transformer block returning ``(mlp_out, residual)``.
-
-    The block no longer closes the residual loop internally. Instead the
-    caller (``Qwen3Decoder``) threads ``residual`` through every block so the
-    ``residual + mlp_out`` add at the block boundary can be fused with the
-    next block's ``input_layernorm`` via a single ``residual_rms_norm`` call.
-
-    On the first block ``residual`` is ``None``; ``input_layernorm`` runs
-    unfused and the output feeds ``self_attn`` directly.
-    """
+    """Qwen3 transformer block returning ``(mlp_out, residual)``."""
 
     def __init__(self, config: Qwen3Config, fused_projections: bool = False):
         super().__init__()

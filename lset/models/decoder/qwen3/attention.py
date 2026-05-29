@@ -126,15 +126,7 @@ class Qwen3Attention(nn.Module):
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
     ) -> torch.Tensor:
-        """Packed forward path.
-
-        Args:
-            hidden_states: (total_tokens, H)
-            cos, sin: (max_seqlen, head_dim)
-            position_ids: (total_tokens,)
-            cu_seqlens: (num_seqs + 1,) int32
-            max_seqlen: int
-        """
+        """Packed forward path."""
         T, _ = hidden_states.shape
         if self.fused_qkv:
             qkv = self.qkv_proj(hidden_states)
@@ -209,15 +201,7 @@ def _try_flash_attn(q, k, v, cu_seqlens, max_seqlen, causal=True):
 
 
 def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_heads, num_kv_groups, causal=True):
-    """Configurable attention backend for packed sequences.
-
-    Backend selection ("auto" strategy):
-      flash_attn (v2.8.3+) compiles without graph breaks, so it's preferred.
-      varlen_attn is PyTorch-native and also compile-friendly.
-      SDPA fallback builds O(T^2) block-diagonal mask.
-
-    Priority: flash_attn > varlen_attn > SDPA (when auto).
-    """
+    """Configurable attention backend for packed sequences."""
     backend = _ATTN_BACKEND
 
     if backend == "auto":
@@ -251,12 +235,7 @@ def _flash_or_sdpa_packed(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_hea
 
 
 def _sdpa_packed_fallback(q, k, v, cu_seqlens, max_seqlen, num_heads, num_kv_heads, num_kv_groups, causal=True):
-    """SDPA fallback for packed sequences when flash_attn is unavailable.
-
-    Builds a block-diagonal mask and runs SDPA on (1, T, ...) tensors.
-    When causal=True, applies causal (lower triangular) masking within each block.
-    When causal=False (encoder-style), applies full bidirectional attention within blocks.
-    """
+    """SDPA fallback for packed sequences when flash_attn is unavailable."""
     T = q.shape[0]
     device = q.device
     dtype = q.dtype

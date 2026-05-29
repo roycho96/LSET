@@ -1,14 +1,4 @@
-"""Shared primitives for contrastive losses.
-
-``LogitScale`` holds a learnable, clamped inverse-temperature (CLIP style).
-``log(scale)`` is the optimized parameter; its ``.exp().clamp(max=max_scale)``
-is multiplied into the cosine similarity matrix. Clamping prevents a runaway
-scale from overflowing bf16/fp16 at the softmax boundary (>~11.0 in log space
-already saturates bf16 exp to inf).
-
-Use as a module attribute on the task that owns the loss so it gets
-registered in ``state_dict`` and the optimizer.
-"""
+"""Shared primitives for contrastive losses."""
 
 from __future__ import annotations
 
@@ -19,13 +9,7 @@ import torch.nn as nn
 
 
 class LogitScale(nn.Module):
-    """Learnable CLIP-style logit scale with max-clamp.
-
-    Args:
-        init_scale: initial value of ``exp(log_scale)`` (i.e. ``1 / temperature``).
-        max_scale:  hard clamp on the returned scale to avoid overflow.
-        learnable:  if False, ``log_scale`` is a buffer and not optimized.
-    """
+    """Learnable CLIP-style logit scale with max-clamp."""
 
     def __init__(self, init_scale: float = 20.0, max_scale: float = 100.0, learnable: bool = True):
         super().__init__()

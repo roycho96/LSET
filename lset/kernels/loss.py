@@ -1,6 +1,4 @@
-"""
-Fused Dense Embedding Loss
-"""
+"""Fused Dense Embedding Loss"""
 
 import math
 
@@ -41,27 +39,7 @@ def should_use_fused(
     num_docs: int,
     loss_type: str = "multi",
 ) -> bool:
-    """
-    Determine whether to use the fused kernel (hierarchical Q + K threshold).
-
-    Based on K/Q sweep benchmarks (H100, D=1024, bf16):
-      - Q >= 2048: almost always beneficial (1.07~1.49x speed, 8~71% mem)
-      - Q >= 1024 and K >= 4096: crossover point (~1.15x speed)
-      - Q < 1024: dip zone (0.81~0.96x speed), memory always wins but speed loses
-      - soft/cross have later crossover than multi (ref is simple matmul+logsumexp, cuBLAS advantaged)
-
-    Difference from v5 fallback (K<512):
-      - v5: K-only threshold -> fallback even at Q=4096,K=256 -> unnecessary score matrix
-      - v6.1: Q-aware hierarchical -> fused used even for small K if Q is large enough
-
-    Args:
-        num_queries: Q (number of queries)
-        num_docs: K (number of documents)
-        loss_type: "multi", "soft", "cross"
-
-    Returns:
-        True to use fused kernel, False for reference (score matrix) path
-    """
+    """Determine whether to use the fused kernel (hierarchical Q + K threshold)."""
     if loss_type == "multi":
         # MULTI: beneficial regardless of K when Q>=2048, beneficial at K>=4096 when Q>=1024
         if num_queries >= 2048:
@@ -83,22 +61,7 @@ def should_use_fused(
 
 
 def _bucket_q(num_queries: int) -> int:
-    """
-    Bucket Q size into 3 ranges. Added to autotune key so that
-    optimal configs are cached separately per Q size range.
-
-    In the dip zone (Q<=512) small BLOCK_M (8/16) gets selected,
-    while large Q (>1024) retains large BLOCK_M (16/32/64).
-
-    Ranges:
-      0: Q <= 512   (dip zone, fwd BM=16, dQ BM=8 preferred)
-      1: Q <= 1024  (transition zone)
-      2: Q > 1024   (large Q, existing configs preferred)
-
-    CUBIN cache impact:
-      Not tl.constexpr -> no increase in compiled variants, only best_config mapping separated.
-      +2 buckets per kernel = only autotune cache entries increase (~15MB VRAM).
-    """
+    """Bucket Q size into 3 ranges, added to the autotune key for per-range caching."""
     if num_queries <= 512:
         return 0
     elif num_queries <= 1024:
@@ -205,26 +168,7 @@ def _lse_fwd_kernel(
     # overflow int32 max (2^31-1), reading wrong memory.
     # Set True when Q*K > 2^31.
 ):
-    """
-    Forward kernel computing logsumexp of selected scores for each query.
-
-    Core idea:
-      Normally, loss computation first builds score_matrix = Q @ K^T then computes logsumexp.
-      This kernel avoids storing the score matrix by recomputing it tile-by-tile (small blocks)
-      while incrementally computing logsumexp. This is the essence of "fused" -- memory savings.
-
-    Online logsumexp algorithm:
-      logsumexp(s1, s2, ..., sN) = max_s + log(sum(exp(si - max_s)))
-      Since we can't see all scores at once, we process tiles one by one,
-      incrementally updating the running max and running exp sum.
-      If the new tile's max exceeds the current max, a correction factor is applied to the
-      existing exp sum.
-
-    Parallelization:
-      GPU grid = (ceil(num_queries / BLOCK_M),)
-      Each CTA (thread block) independently computes logsumexp for BLOCK_M queries.
-      The K (document) direction is traversed sequentially in a for loop within each CTA.
-    """
+    """Forward kernel computing logsumexp of selected scores for each query."""
     # This CTA's index. The GPU runs multiple CTAs concurrently, each handling a different query block
     pid_m = tl.program_id(0)
     # Query indices assigned to this CTA. e.g.: pid_m=3, BLOCK_M=32 -> [96, 97, ..., 127]
@@ -392,24 +336,7 @@ def _dq_bwd_kernel(
     # grad_s (gradient w.r.t. score) formula differs per loss type
     INT64_LABELS: tl.constexpr,  # True for int64 label pointer arithmetic (Q*K > 2^31)
 ):
-    """
-    dQ backward kernel: compute gradient for each query.
-
-    Math:
-      dQ[i] = sum_j grad_s[i,j] * K[j]
-      i.e., multiply grad_s (gradient w.r.t. score) [Q,K] matrix with K [K,D] matrix to get dQ [Q,D].
-
-    Process:
-      1) Recompute Q@K^T scores tile-by-tile (same as forward, no score matrix stored)
-      2) Compute grad_s using scores and RefLSE/Aux/W with per-loss-type formula
-      3) Accumulate grad_s @ K_tile into dQ
-
-    Parallelization:
-      grid = (ceil(num_queries / BLOCK_M),)
-      Each CTA computes dQ for BLOCK_M queries. K direction is sequential loop within CTA.
-      reset_to_zero=["dQ"]: autotune benchmarks multiple configs, resets dQ to zero each time.
-      Without this, previous benchmark results remain and gradients get inflated N-fold.
-    """
+    """dQ backward kernel: compute gradient for each query."""
     # PTX inline assembly for TF32 conversion. GPU instruction to round fp32 to tf32 precision.
     # Used before passing to tl.dot when CAST_DTYPE=0
     ASM: tl.constexpr = "cvt.rna.tf32.f32 $0, $1;"
@@ -607,22 +534,7 @@ def _dk_bwd_kernel(
     LOSS_TYPE: tl.constexpr,  # 0=multi, 1=soft, 2=cross
     INT64_LABELS: tl.constexpr,  # True for int64 label pointer (Q*K > 2^31)
 ):
-    """
-    dK backward kernel: compute gradient for each document.
-
-    Math:
-      dK[j] = sum_i grad_s[i,j] * Q[i]
-      i.e., grad_s^T [K,Q] @ Q [Q,D] -> dK [K,D]
-
-    Difference from dQ kernel:
-      dQ: CTAs partitioned along Q axis (each CTA handles BLOCK_M queries, iterates over K)
-      dK: CTAs partitioned along K axis (each CTA handles BLOCK_N docs, iterates over Q)
-      The rest (score recomputation, grad_s computation, accumulation) is identical.
-
-    Parallelization:
-      grid = (ceil(num_docs / BLOCK_N),)
-      Each CTA computes dK for BLOCK_N documents. Q direction is sequential loop within CTA.
-    """
+    """dK backward kernel: compute gradient for each document."""
     # PTX inline assembly for TF32 conversion (same as dQ kernel)
     ASM: tl.constexpr = "cvt.rna.tf32.f32 $0, $1;"
 
@@ -756,16 +668,7 @@ def _dk_bwd_kernel(
 
 
 def _get_dtype_params(dtype):
-    """
-    Determine Triton kernel parameters based on input tensor dtype.
-
-    Returns:
-        fp32_mode: True if input is fp32. Used for tl.dot precision branching in kernel
-        cast_dtype: casting method before passing to tl.dot in backward kernels
-                    0 = tf32 (inline asm to round fp32 to tf32)
-                    1 = bf16 (cast grad_s to bf16)
-                    2 = fp16 (cast grad_s to fp16)
-    """
+    """Determine Triton kernel parameters based on input tensor dtype."""
     if dtype == torch.float32:
         return True, 0  # FP32_MODE=True, CAST_DTYPE=tf32
     elif dtype == torch.bfloat16:
@@ -790,22 +693,7 @@ def _select_group_m(num_queries):
 
 
 def _lse_forward(q_scaled, k, labels, lse_mode, allow_tf32=False):
-    """
-    Python wrapper for the forward LSE kernel.
-
-    Makes tensors contiguous, allocates output tensor, computes kernel parameters,
-    and launches the Triton kernel.
-
-    Args:
-        q_scaled: [Q, D] scale-multiplied query embeddings
-        k: [K, D] document embeddings
-        labels: [Q, K] int8 label matrix
-        lse_mode: LSE_NEG_ONLY(0) or LSE_VALID_ALL(1)
-        allow_tf32: whether to allow tf32 tensorcore for fp32 input
-
-    Returns:
-        [Q] logsumexp value for each query (fp32)
-    """
+    """Python wrapper for the forward LSE kernel."""
     num_queries, hidden_dim = q_scaled.shape
     num_docs = k.shape[0]
 
@@ -868,26 +756,7 @@ def _all_lse_forward(q_scaled, k, labels, allow_tf32=False):
 
 
 def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=False):
-    """
-    Backward wrapper: sequentially launch dQ and dK kernels to compute gradients.
-
-    The two kernels are independent and could in principle run concurrently,
-    but currently launched sequentially (auto-serialized on a single CUDA stream).
-
-    Args:
-        q_scaled: [Q, D] scale-multiplied query
-        k: [K, D] document
-        labels: [Q, K] int8 label
-        ref_lse: [Q] logsumexp computed in forward
-        aux: [Q] per-loss auxiliary value (sum_weights or label_sum)
-        w: [Q] per-query weight (grad_output * inv_weight)
-        loss_type_int: 0=multi, 1=soft, 2=cross
-        allow_tf32: allow tf32 tensorcore
-
-    Returns:
-        dq: [Q, D] query gradient (fp32)
-        dk: [K, D] document gradient (fp32)
-    """
+    """Backward wrapper: sequentially launch dQ and dK kernels to compute gradients."""
     num_queries, hidden_dim = q_scaled.shape
     num_docs = k.shape[0]
 
@@ -976,29 +845,7 @@ def _backward(q_scaled, k, labels, ref_lse, aux, w, loss_type_int, allow_tf32=Fa
 
 
 def _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg_counts):
-    """
-    Prepare positive pair indices and related info.
-
-    The caller (loss.py) may pass pre-computed pos_qi/pos_di, or if not provided,
-    they are extracted directly from the labels matrix.
-
-    Args:
-        q_scaled: [Q, D] query embeddings (for score computation)
-        k: [K, D] document embeddings
-        labels: [Q, K] int8 label matrix
-        pos_qi: [P] positive pair query indices (None to extract from labels)
-        pos_di: [P] positive pair document indices
-        pos_counts: [Q] per-query positive count (None to compute from pos_qi via bincount)
-        neg_counts: [Q] per-query negative count (None to estimate)
-
-    Returns:
-        pos_qi: [P] positive pair query indices
-        pos_di: [P] positive pair document indices
-        num_pos: [Q] per-query positive count
-        has_neg: [Q] bool, whether each query has negatives
-        pos_scores: [P] dot product score for each positive pair (no grad)
-        pos_label_values: [P] label value for each positive pair (float32)
-    """
+    """Prepare positive pair indices and related info."""
     num_queries = q_scaled.shape[0]
     num_docs = k.shape[0]
     device = q_scaled.device
@@ -1047,17 +894,7 @@ def _resolve_positive_pairs(q_scaled, k, labels, pos_qi, pos_di, pos_counts, neg
 
 
 class FusedDenseLoss(torch.autograd.Function):
-    """
-    Fused Dense Loss implemented as a PyTorch autograd Function.
-
-    Inheriting from torch.autograd.Function allows defining custom forward/backward.
-    Normally PyTorch auto-generates backward, but this kernel doesn't store the score
-    matrix, so backward must recompute Q@K^T. Hence both forward and backward are
-    manually implemented.
-
-    ctx: context object for passing tensors from forward to backward.
-         Use save_for_backward() to save, and saved_tensors to retrieve in backward.
-    """
+    """Fused Dense Loss implemented as a PyTorch autograd Function."""
 
     @staticmethod
     def forward(
@@ -1074,17 +911,7 @@ class FusedDenseLoss(torch.autograd.Function):
         pos_scores: Tensor,  # [P] positive pair scores (pre-computed in Python)
         pos_label_values: Tensor,  # [P] positive pair label values
     ):
-        """
-        Unified forward for all 3 loss types.
-
-        Common flow:
-          1) Compute logsumexp via Triton kernel (no score matrix stored)
-          2) Combine positive pair scores with logsumexp in Python to compute loss
-          3) Save tensors needed for backward (ref_lse, aux, w)
-
-        MP-NCE: neg_lse kernel (negatives only) -> softplus loss
-        Soft/Cross CE: all_lse kernel (pos+neg) -> CE loss
-        """
+        """Unified forward for all 3 loss types."""
         num_queries = q_scaled.shape[0]
         device = q_scaled.device
 
@@ -1190,12 +1017,7 @@ class FusedDenseLoss(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        """
-        Backward: launch Triton dQ/dK kernels to compute gradients.
-
-        grad_output: upstream gradient w.r.t. loss (scalar, usually 1.0)
-        w = grad_output * inv_weight: final per-query weight passed to kernels
-        """
+        """Backward: launch Triton dQ/dK kernels to compute gradients."""
         q_scaled, k, labels, ref_lse, aux, inv_weight = ctx.saved_tensors
         # Multiply grad_output (scalar) with per-query inv_weight to get per-query weight
         # This w is multiplied into grad_s inside the kernels
@@ -1238,32 +1060,7 @@ def fused_dense_loss(
     pos_counts: Optional[Tensor] = None,
     neg_counts: Optional[Tensor] = None,
 ) -> Tensor:
-    """
-    Fused Dense Embedding Loss (all 3 types unified) - main entry point.
-
-    Standard contrastive loss first computes score_matrix = Q @ K^T and stores it,
-    then computes loss. This function avoids storing the score matrix by recomputing
-    it tile-by-tile inside Triton kernels, saving memory.
-
-    Recommended to check should_use_fused() beforehand to verify fused is beneficial.
-    For small Q*K, the reference (score matrix approach) may be faster.
-
-    Args:
-        q: [Q, D] query embeddings (normalized)
-        k: [K, D] document embeddings (normalized)
-        labels: [Q, K] int8 labels (>0: positive, 0: negative, -1: ignore)
-        scale: temperature scale to multiply scores (float or learnable Tensor)
-               q_scaled = q * scale before passing to kernel
-        loss_type: "multi" (MP-NCE), "soft" (Soft CE), "cross" (Cross CE)
-        allow_tf32: whether to allow TF32 tensorcore in fp32 mode (precision vs speed tradeoff)
-        pos_qi: [P] int64, positive pair query indices (optional, extracted from labels if None)
-        pos_di: [P] int64, positive pair doc indices (optional)
-        pos_counts: [Q] int64, per-query positive count (optional)
-        neg_counts: [Q] int64, per-query negative count (optional)
-
-    Returns:
-        scalar loss tensor (gradient-tracked, .backward() callable)
-    """
+    """Fused Dense Embedding Loss (all 3 types unified) - main entry point."""
     # Convert loss_type string to integer (for tl.constexpr branching in kernels)
     loss_type_int = _LOSS_TYPE_MAP.get(loss_type, LOSS_MULTI)
 

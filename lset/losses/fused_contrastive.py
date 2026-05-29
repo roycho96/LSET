@@ -1,9 +1,4 @@
-"""Fused contrastive loss with automatic dispatch.
-
-Uses SM100 CUDA kernels on Blackwell GPUs, Triton fused kernels on older GPUs
-when Q*K is large enough to benefit. Falls back to reference contrastive_loss
-otherwise.
-"""
+"""Fused contrastive loss with automatic dispatch."""
 
 import torch
 
@@ -29,26 +24,7 @@ def fused_contrastive_loss(
     pos_counts: Tensor | None = None,
     loss_type: str = "multi",
 ) -> Tensor:
-    """Contrastive loss with automatic fused kernel dispatch.
-
-    When Q*K exceeds the threshold for the given loss_type, uses Triton
-    fused kernels that compute the loss without materializing the full
-    Q*K score matrix. Otherwise falls back to the reference implementation.
-
-    Args:
-        query_embeds: (Q, D) normalized query embeddings.
-        doc_embeds: (K, D) normalized doc embeddings.
-        labels: (Q, K) label matrix. 1=positive, 0=negative, -1=ignore.
-        temperature: Scaling temperature.
-        scores: (Q, K) optional soft scores for distillation.
-        pos_qi: (P,) int64 — positive pair query indices.
-        pos_di: (P,) int64 — positive pair doc indices.
-        pos_counts: (Q,) int64 — positive count per query.
-        loss_type: "multi" (MP-NCE), "soft" (Soft CE), "cross" (Cross CE).
-
-    Returns:
-        Scalar loss.
-    """
+    """Contrastive loss with automatic fused kernel dispatch."""
     Q, K = query_embeds.shape[0], doc_embeds.shape[0]
 
     use_fused = (

@@ -1,15 +1,4 @@
-"""Fused Residual-Add + RMSNorm — single-pass Triton kernel.
-
-Techniques match ``rmsnorm.py`` (Liger-style single-pass row load + weight
-fold inside kernel + per-SM partial dW reduction). In addition:
-
-  - The ``residual + attn_out`` add happens in the same kernel, storing
-    ``new_residual`` for both the backward graph and downstream consumers
-    (the next block's MLP residual).
-  - Backward returns ``(d_residual, d_attn_out, None)`` — both are equal
-    (since ``d/dx(a + b) = 1`` for each input) but we clone the second
-    slot to avoid AccumulateGrad aliasing if a caller hooks on both.
-"""
+"""Fused Residual-Add + RMSNorm — single-pass Triton kernel."""
 
 from __future__ import annotations
 
@@ -193,14 +182,7 @@ def _bwd(grad_y: Tensor, nr_2d: Tensor, w: Tensor, rstd: Tensor, BLOCK_SIZE: int
 
 
 class _FusedResidualRMSNormFn(torch.autograd.Function):
-    """Fused residual-add + weight-folded RMSNorm.
-
-    Forward returns ``(weight * rms_norm(residual + attn_out), residual + attn_out)``.
-    Backward returns ``(d_residual, d_attn_out, d_weight, None)`` where
-    ``d_residual == d_attn_out`` (the add passes grad through unchanged).
-    The second slot is a clone so AccumulateGrad on distinct params cannot
-    alias.
-    """
+    """Fused residual-add + weight-folded RMSNorm."""
 
     @staticmethod
     def forward(ctx, residual: Tensor, attn_out: Tensor, weight: Tensor, eps: float):

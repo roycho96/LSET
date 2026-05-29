@@ -1,16 +1,4 @@
-"""Triton packed segment mean pooling kernel.
-
-Replaces scatter_add_ + repeat_interleave with a single Triton kernel that
-reads hidden[cu_seqlens[seg]:cu_seqlens[seg+1]], computes the mean, and
-optionally L2-normalizes in one pass.
-
-Eliminates:
-- repeat_interleave allocation for segment_ids
-- scatter_add_ kernel
-- Separate division by lengths
-
-One program per sequence. Inner loop over tokens in the segment.
-"""
+"""Triton packed segment mean pooling kernel."""
 
 import torch
 import triton
@@ -256,17 +244,7 @@ def triton_segment_mean_pool(
     normalize: bool = True,
     eps: float = 1e-12,
 ) -> Tensor:
-    """Triton packed segment mean pooling.
-
-    Args:
-        hidden_states: (T, H) packed hidden states
-        cu_seqlens: (M+1,) cumulative sequence lengths, int32
-        normalize: Whether to L2-normalize output
-        eps: epsilon for normalization
-
-    Returns:
-        (M, H) mean-pooled (and optionally normalized) embeddings
-    """
+    """Triton packed segment mean pooling."""
     if normalize:
         return _TritonSegmentMeanNormalizeFn.apply(hidden_states, cu_seqlens, eps)
     else:

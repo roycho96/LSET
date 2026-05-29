@@ -1,17 +1,4 @@
-"""RNG state snapshot/restore for GradCache two-forward consistency.
-
-GradCache runs the same minibatch through the encoder twice:
-  - Step 1 (no_grad): cache embeddings
-  - Step 3 (with_grad): replay forward and backward cached grads into params
-
-Dropout / any stochastic op must produce identical outputs in both passes,
-otherwise the cached gradient is computed against a different function than
-the one being replayed, which silently biases the training signal.
-
-RandContext snapshots CPU + CUDA RNG at Step 1 and restores it on Step 3.
-`fork_rng` sandboxes the restored state so the surrounding training loop's
-RNG sequence is not rewound.
-"""
+"""RNG state snapshot/restore for GradCache two-forward consistency."""
 
 from __future__ import annotations
 

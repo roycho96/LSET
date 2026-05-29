@@ -1,23 +1,4 @@
-"""GradCache — scale contrastive batches beyond the encoder's memory.
-
-Three-step schedule (same plan of minibatches used in Steps 1 and 3):
-
-  Step 1. For each feature (query, doc), iterate ``plan_minibatches`` in
-          ``torch.no_grad``, snapshotting RNG before each forward so
-          dropout can be replayed bit-exactly. Keep detached leaves.
-  Step 2. Concatenate leaves per feature, ``gather_with_grad`` across the
-          DP group, compute the full-batch loss, and grab the leaf-level
-          gradients with ``torch.autograd.grad`` (NOT ``.backward``) so no
-          DDP/FSDP/ZeRO reducer fires. A learnable ``logit_scale`` on the
-          task is added to the grad_outputs list automatically.
-  Step 3. Iterate the same plan, restore the RNG snapshot, redo the
-          forward with grad, and call ``runtime.backward(surrogate, is_last)``
-          where ``surrogate = <embedding, cached_grad>``. The runtime
-          object (Basic / DDP / FSDP2 / DeepSpeed) decides when to sync.
-
-``is_ga_boundary`` controls the final sync on the GA boundary
-micro-step.
-"""
+"""GradCache — scale contrastive batches beyond the encoder's memory."""
 
 from __future__ import annotations
 
@@ -90,16 +71,7 @@ def _slice_feature(feature: dict, begin: int, end: int) -> dict:
 
 
 class GradCacheWrapper:
-    """Encoder-agnostic GradCache driver.
-
-    Args:
-        task: the encoder + pooling + loss wrapper. Must expose ``encode`` and
-              (optionally) a ``logit_scale`` ``LogitScale`` submodule.
-        chunk_size: minibatch size in sequences.
-        token_budget: if set, packed batches are split by token count instead.
-        selective_keep: (padded only) fraction of largest-grad samples to replay
-                        in Step 3; 1.0 replays all.
-    """
+    """Encoder-agnostic GradCache driver."""
 
     def __init__(
         self,

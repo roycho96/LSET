@@ -6,18 +6,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 
 def build_scheduler(optimizer, scheduler_type: str, max_steps: int, warmup_steps: int = 0, **kwargs):
-    """Build a learning rate scheduler with optional warmup.
-
-    Args:
-        optimizer: The optimizer.
-        scheduler_type: One of "cosine", "linear", "wsd", "constant".
-        max_steps: Total training steps.
-        warmup_steps: Number of warmup steps.
-        **kwargs: Extra args (e.g., stable_ratio for wsd).
-
-    Returns:
-        LambdaLR scheduler.
-    """
+    """Build a learning rate scheduler with optional warmup."""
 
     def lr_lambda(current_step):
         # Warmup phase

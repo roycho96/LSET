@@ -1,15 +1,4 @@
-"""Fused LayerNorm — single-pass Triton kernel.
-
-Matches the ``rmsnorm.py`` pattern: ``BLOCK_SIZE = next_pow2(D)`` single-row
-load, ``weight`` and ``bias`` folded inside the kernel store, backward with
-persistent ``(sm_count,)`` grid accumulating per-CTA partial ``dW`` and
-``dB`` reduced on host.
-
-``mean`` and ``rstd`` are computed via the biased estimator
-``var = E[X²] − E[X]²`` with a clamp against tiny negatives from fp rounding
-— identical to the previous LSET LayerNorm but now in a single reduction
-pass over X.
-"""
+"""Fused LayerNorm — single-pass Triton kernel."""
 
 from __future__ import annotations
 

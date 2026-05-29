@@ -1,24 +1,4 @@
-"""Fused RMSNorm — single-pass Triton kernel.
-
-Layout follows Liger-Kernel (which in turn builds on Unsloth). Both are
-MIT/Apache licensed references; the techniques are ported, not copied
-verbatim.
-
-Key techniques (vs. the previous multi-pass LSET version):
-  1. ``BLOCK_SIZE = next_pow2(D)`` — the whole row lives in registers, so X
-     is read from HBM exactly once in forward and once in backward.
-  2. ``weight`` is multiplied inside the kernel store — no separate
-     ``aten::mul`` launch after the Function returns.
-  3. Backward uses a persistent ``(sm_count,)`` grid with ``rows_per_program``
-     rows per CTA and accumulates a per-program ``dW`` partial into an
-     ``(sm_count, D)`` fp32 buffer. A single ``.sum(0)`` reduction gives
-     ``dW`` — no Python-level autograd over ``weight * x_hat``.
-  4. ``rstd`` is computed in fp32 (llama-style casting); inputs/outputs stay
-     in their original dtype.
-
-Falls back to the eager PyTorch formula when CUDA is unavailable or D
-exceeds the kernel's ``_MAX_FUSED_SIZE``.
-"""
+"""Fused RMSNorm — single-pass Triton kernel."""
 
 from __future__ import annotations
 
@@ -190,11 +170,7 @@ def _rms_norm_backward(grad_y: Tensor, x_2d: Tensor, w: Tensor, rstd: Tensor, BL
 
 
 class _FusedRMSNormFn(torch.autograd.Function):
-    """Weight-folded RMSNorm; returns ``weight * rms_norm(x)`` directly.
-
-    Backward returns ``(dx, dw, None)``. ``dw`` is accumulated per-CTA then
-    reduced on host via ``.sum(0)`` — no separate ``aten::mul`` backward.
-    """
+    """Weight-folded RMSNorm; returns ``weight * rms_norm(x)`` directly."""
 
     @staticmethod
     def forward(ctx, x: Tensor, weight: Tensor, eps: float):

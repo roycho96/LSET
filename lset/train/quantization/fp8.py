@@ -1,14 +1,4 @@
-"""Float8 (FP8) mixed-precision training using torchao.
-
-Converts nn.Linear modules to Float8Linear for ~1.5x training speedup
-on Hopper+ (SM≥8.9) and Blackwell (SM100) GPUs.
-
-Key constraints:
-- Requires torch.compile for performance benefit
-- All linear dims must be divisible by 16
-- Not compatible with LoRA (torchtune#2833)
-- Rowwise recipe recommended for best accuracy
-"""
+"""Float8 (FP8) mixed-precision training using torchao."""
 
 from __future__ import annotations
 
@@ -23,20 +13,7 @@ def apply_fp8_training(
     recipe: str = "rowwise",
     enable_fsdp_float8_all_gather: bool = False,
 ) -> nn.Module:
-    """Convert model's linear layers to Float8Linear for FP8 training.
-
-    Must be called BEFORE TP and FSDP2 (composition order:
-    FP8 → TP → AC → FSDP2 → compile → weights).
-
-    Args:
-        model: Model to convert in-place.
-        recipe: One of "tensorwise", "rowwise", "rowwise_with_gw_hp".
-        enable_fsdp_float8_all_gather: Enable FP8 all-gather in FSDP2
-            (only for tensorwise recipe).
-
-    Returns:
-        The converted model.
-    """
+    """Convert model's linear layers to Float8Linear for FP8 training."""
     if recipe not in VALID_RECIPES:
         raise ValueError(f"Invalid FP8 recipe '{recipe}'. Choose from: {VALID_RECIPES}")
 
@@ -71,11 +48,7 @@ def apply_fp8_training(
 
 
 def get_fp8_tp_plan(config, use_fp8: bool = False, recipe: str = "rowwise"):
-    """Get TP plan that uses Float8-aware parallel styles for tensorwise recipe.
-
-    For rowwise recipe, uses standard ColwiseParallel/RowwiseParallel since
-    Float8 all-gather only works with tensorwise scaling.
-    """
+    """Get TP plan that uses Float8-aware parallel styles for tensorwise recipe."""
     from lset.models.decoder.qwen3.parallel_plan import get_tp_plan
 
     if not use_fp8 or recipe != "tensorwise":

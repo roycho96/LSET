@@ -29,10 +29,7 @@ class _GatherWithGrad(torch.autograd.Function):
 
 
 def gather_with_grad(tensor: torch.Tensor) -> torch.Tensor:
-    """All-gather embeddings across GPUs, preserving gradients.
-
-    Returns the original tensor unchanged if distributed is not initialized.
-    """
+    """All-gather embeddings across GPUs, preserving gradients."""
     if not dist.is_initialized() or dist.get_world_size() == 1:
         return tensor
     return _GatherWithGrad.apply(tensor)

@@ -1,20 +1,8 @@
-"""Pipeline Parallelism setup for LSET models.
-
-PP is NOT compatible with bi-encoder (separate query/doc forward).
-This module provides structure for future reranker/single-input tasks.
-"""
+"""Pipeline Parallelism setup for LSET models."""
 
 
 def get_pp_split_points(config, num_stages: int) -> dict:
-    """Return split point FQNs for even layer distribution.
-
-    Args:
-        config: Model config with num_hidden_layers.
-        num_stages: Number of pipeline stages (= pp_size).
-
-    Returns:
-        Dict mapping layer FQN to split type.
-    """
+    """Return split point FQNs for even layer distribution."""
     num_layers = config.num_hidden_layers
     assert num_layers % num_stages == 0, f"Layers {num_layers} not divisible by stages {num_stages}"
 
@@ -26,15 +14,7 @@ def get_pp_split_points(config, num_stages: int) -> dict:
 
 
 def get_stage_module_names(config, num_stages: int) -> list[list[str]]:
-    """Get module names per pipeline stage.
-
-    Args:
-        config: Model config with num_hidden_layers.
-        num_stages: Number of pipeline stages.
-
-    Returns:
-        List of lists of module FQNs per stage.
-    """
+    """Get module names per pipeline stage."""
     num_layers = config.num_hidden_layers
     layers_per_stage = num_layers // num_stages
     stages = []

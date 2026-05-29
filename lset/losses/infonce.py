@@ -12,14 +12,7 @@ def infonce_loss(
     temperature: float = 0.02,
     top_k: int | None = None,
 ) -> torch.Tensor:
-    """Diagonal InfoNCE with optional hard-negative truncation.
-
-    Positives are along the diagonal (``query[i]`` matches ``doc[i]``).
-    When ``0 < top_k < B - 1``, the softmax denominator uses only the
-    positive plus the top-K hardest negatives per query.
-
-    Returns a grad-carrying zero if the batch is empty.
-    """
+    """Diagonal InfoNCE with optional hard-negative truncation."""
     B = query_embeds.shape[0]
     if B == 0:
         return (query_embeds.sum() * 0.0).to(query_embeds.dtype)

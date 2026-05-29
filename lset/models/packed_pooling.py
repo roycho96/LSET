@@ -10,17 +10,7 @@ from lset.kernels.segment_pool import triton_segment_mean_pool as _triton_segmen
 def packed_pool(
     hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, strategy: str, normalize: bool = True
 ) -> torch.Tensor:
-    """Pool packed hidden states into per-sequence embeddings.
-
-    Args:
-        hidden_states: (total_tokens, H)
-        cu_seqlens: (num_seqs + 1,) int32
-        strategy: "last_token" | "mean" | "cls"
-        normalize: Whether to L2-normalize output.
-
-    Returns:
-        (num_seqs, H) embeddings
-    """
+    """Pool packed hidden states into per-sequence embeddings."""
     # Fused path: pool + normalize in one shot when on CUDA
     import os
 

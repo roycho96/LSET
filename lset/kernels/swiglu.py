@@ -1,19 +1,4 @@
-"""Fused SwiGLU activation — single Triton kernel for silu(gate) * up.
-
-Standard SwiGLU:
-  gate_out = gate_proj(x)      # matmul
-  up_out = up_proj(x)          # matmul
-  hidden = silu(gate_out)      # aten::silu (elementwise)
-  hidden = hidden * up_out     # aten::mul (elementwise)
-  → 2 separate elementwise kernel launches
-
-Fused SwiGLU:
-  Read gate_out and up_out, compute silu(gate)*up, write result.
-  → 1 kernel launch, half the memory traffic (no intermediate).
-
-Savings: 28 layers × 1 fewer launch = 28 fewer launches per forward pass.
-Also saves memory bandwidth by not writing silu intermediate.
-"""
+"""Fused SwiGLU activation — single Triton kernel for silu(gate) * up."""
 
 import torch
 import triton
@@ -70,12 +55,7 @@ def _swiglu_bwd_kernel(
     N,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Backward for SwiGLU.
-
-    Forward: out = silu(gate) * up
-    d_out/d_gate = up * sigmoid(gate) * (1 + gate * (1 - sigmoid(gate)))
-    d_out/d_up = silu(gate)
-    """
+    """Backward for SwiGLU."""
     pid = tl.program_id(0)
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < N

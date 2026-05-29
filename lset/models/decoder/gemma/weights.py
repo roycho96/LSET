@@ -8,10 +8,7 @@ from safetensors.torch import load_file
 
 
 def load_gemma_weights(model_path: str | Path) -> dict:
-    """Load EmbeddingGemma weights and convert keys.
-
-    Keys in safetensors have no prefix — directly match our module names.
-    """
+    """Load EmbeddingGemma weights and convert keys."""
     model_path = Path(model_path)
     safetensor_files = sorted(model_path.glob("*.safetensors"))
 
@@ -31,10 +28,7 @@ def load_gemma_weights(model_path: str | Path) -> dict:
 
 
 def load_gemma_projection(model_path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load the 2_Dense and 3_Dense post-pooling projection weights.
-
-    Returns (proj_up_weight, proj_down_weight) for 768→3072→768 projection.
-    """
+    """Load the 2_Dense and 3_Dense post-pooling projection weights."""
     model_path = Path(model_path)
     proj_up = load_file(str(model_path / "2_Dense" / "model.safetensors"))
     proj_down = load_file(str(model_path / "3_Dense" / "model.safetensors"))

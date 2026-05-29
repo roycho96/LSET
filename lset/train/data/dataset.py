@@ -9,24 +9,7 @@ from torch.utils.data import Dataset
 
 
 class EmbeddingDataset(Dataset):
-    """Dataset that reads JSON/JSONL with flexible formats.
-
-    Auto-detects format from first sample:
-    - pair: {"query", "positive"}
-    - triplet: {"query", "positive", "negatives": [...]}
-    - multi: {"query", "positives": [...], "negatives": [...]}
-    - scored: {"query", "documents": [{"text", "score"}, ...]}
-
-    Each __getitem__ returns a normalized dict:
-    {
-        "query": str,
-        "positives": list[str],
-        "negatives": list[str],
-        "scores": list[float] | None,
-    }
-
-    Tokenization happens in the collator, NOT here.
-    """
+    """Dataset that reads JSON/JSONL with flexible formats."""
 
     def __init__(
         self,

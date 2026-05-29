@@ -1,10 +1,4 @@
-"""Fused Residual-Add + LayerNorm — single-pass Triton kernel.
-
-Matches ``layernorm.py`` (single-pass + weight/bias fold + per-SM partial
-dW/dB) and ``residual_rmsnorm.py`` (fused residual add). Used by BERT /
-XLM-RoBERTa encoders and the LayerNorm variant of the block-boundary
-fusion.
-"""
+"""Fused Residual-Add + LayerNorm — single-pass Triton kernel."""
 
 from __future__ import annotations
 

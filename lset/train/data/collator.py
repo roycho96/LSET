@@ -6,13 +6,7 @@ from lset.train.data.packing import pack_sequences
 
 
 class LeftPadCollator:
-    """Collates samples with left padding for last-token pooling.
-
-    Expects each sample to be a dict with 'query' and 'positive' keys,
-    each containing 'input_ids' and 'attention_mask' lists.
-
-    Legacy collator for Phase A/B backward compatibility.
-    """
+    """Collates samples with left padding for last-token pooling."""
 
     def __init__(self, pad_token_id: int):
         self.pad_token_id = pad_token_id
@@ -48,10 +42,7 @@ class LeftPadCollator:
 
 
 class RightPadCollator:
-    """Collates samples with right padding for mean/CLS pooling.
-
-    Same interface as LeftPadCollator but pads on the right.
-    """
+    """Collates samples with right padding for mean/CLS pooling."""
 
     def __init__(self, pad_token_id: int):
         self.pad_token_id = pad_token_id
@@ -87,19 +78,7 @@ class RightPadCollator:
 
 
 class EmbeddingCollator:
-    """Collator for multi-positive/multi-negative datasets with label matrices.
-
-    Handles the new EmbeddingDataset output format:
-    {"query": str, "positives": [str], "negatives": [str], "scores": [...] | None}
-
-    Returns:
-    {
-        "query": padded or packed batch,
-        "doc": padded or packed batch (all docs flattened),
-        "labels": (num_queries, num_docs) — 1=pos, 0=neg/in-batch-neg,
-        "scores": (num_queries, num_docs) | None,
-    }
-    """
+    """Collator for multi-positive/multi-negative datasets with label matrices."""
 
     def __init__(self, tokenizer, max_length: int = 512, packed: bool = False, length_sorted: bool = False):
         self.tokenizer = tokenizer
@@ -223,10 +202,7 @@ class EmbeddingCollator:
 
 
 class FixedLengthCollator:
-    """Always pads to max_seq_length (not max in batch).
-
-    Required for Pipeline Parallelism which needs fixed tensor shapes.
-    """
+    """Always pads to max_seq_length (not max in batch)."""
 
     def __init__(self, pad_token_id: int, max_seq_length: int):
         self.pad_token_id = pad_token_id

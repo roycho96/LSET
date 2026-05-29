@@ -1,7 +1,4 @@
-"""Llama attention — same as Qwen3 but without QK-norm, with Llama3 RoPE scaling.
-
-Reuses Qwen3 RMSNorm and packed attention infrastructure.
-"""
+"""Llama attention — same as Qwen3 but without QK-norm, with Llama3 RoPE scaling."""
 
 from __future__ import annotations
 

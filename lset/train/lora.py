@@ -1,12 +1,4 @@
-"""LoRA / QLoRA for embedding model fine-tuning.
-
-LoRA: trainable low-rank adapters on frozen base weights.
-QLoRA: LoRA + NF4 base weight quantization (~4x memory reduction).
-
-References:
-  Hu et al. "LoRA: Low-Rank Adaptation of Large Language Models" (2021)
-  Dettmers et al. "QLoRA: Efficient Finetuning of Quantized LLMs" (2023)
-"""
+"""LoRA / QLoRA for embedding model fine-tuning."""
 
 from __future__ import annotations
 
@@ -30,13 +22,7 @@ QWEN3_LORA_TARGETS = (
 
 
 class LoRALinear(nn.Module):
-    """Linear layer with frozen base weight and trainable LoRA adapters.
-
-    forward(x) = base_linear(x) + lora_B(lora_A(dropout(x))) * scale
-
-    The base weight is frozen (no gradients). Only lora_A and lora_B are trained.
-    Initialized so B=zeros → output starts as identity (no perturbation).
-    """
+    """Linear layer with frozen base weight and trainable LoRA adapters."""
 
     def __init__(
         self,
@@ -125,21 +111,7 @@ def apply_lora(
     target_modules: tuple[str, ...] | list[str] = QWEN3_LORA_TARGETS,
     dropout: float = 0.0,
 ) -> nn.Module:
-    """Replace matching nn.Linear modules with LoRALinear wrappers.
-
-    Freezes all model parameters first, then adds trainable LoRA adapters
-    only on modules whose name ends with one of target_modules.
-
-    Args:
-        model: The model to modify (in-place).
-        r: LoRA rank.
-        alpha: LoRA scaling factor.
-        target_modules: Module name suffixes to target (e.g. "q_proj").
-        dropout: Dropout rate on LoRA input.
-
-    Returns:
-        The modified model (same object, modified in-place).
-    """
+    """Replace matching nn.Linear modules with LoRALinear wrappers."""
     for param in model.parameters():
         param.requires_grad_(False)
 
@@ -156,25 +128,7 @@ def apply_qlora(
     block_size: int = 64,
     scaler_block_size: int = 256,
 ) -> nn.Module:
-    """Apply QLoRA: NF4 quantize all target linears, then add LoRA adapters.
-
-    Steps:
-    1. Freeze all parameters
-    2. For each target linear: quantize weight to NF4
-    3. Wrap with LoRALinear (trainable low-rank adapters)
-
-    Args:
-        model: Model to modify in-place.
-        r: LoRA rank.
-        alpha: LoRA scaling factor.
-        target_modules: Module name suffixes to target.
-        dropout: Dropout rate on LoRA input.
-        block_size: NF4 quantization block size.
-        scaler_block_size: NF4 double-quantization scaler block size.
-
-    Returns:
-        The modified model.
-    """
+    """Apply QLoRA: NF4 quantize all target linears, then add LoRA adapters."""
     from lset.train.quantization.nf4 import quantize_linear_nf4
 
     for param in model.parameters():

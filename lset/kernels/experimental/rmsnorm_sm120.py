@@ -1,22 +1,4 @@
-"""SM120 experimental RMSNorm — multi-row CTA exploration (opt-in).
-
-Measured on RTX 5060 Ti (SM120, 36 SMs), multi-row does NOT consistently
-beat the single-row main kernel in ``lset/kernels/rmsnorm.py``:
-
-  - Small N (≤2048): 1.14–1.27x slower than main (launch overhead dominates
-    with fewer CTAs).
-  - Large N (≥8192 with D≥4096): 0.96–0.98x — marginally faster, within
-    benchmark noise.
-
-Kept as a reference / starting point for future experiments (e.g., fused
-qk_norm + RoPE on this same shape). Prefer the main kernel for training.
-
-Techniques on top of the portable ``lset/kernels/rmsnorm.py``:
-  1. ``BLOCK_ROW`` rows per CTA — 2D tile ``(BLOCK_ROW, BLOCK_SIZE)``.
-  2. Hardware rsqrt via ``triton.language.extra.libdevice.rsqrt`` (also now
-     used in the main kernel — no longer an experimental-only win).
-  3. Persistent backward grid ``(sm_count,)`` with row striping.
-"""
+"""SM120 experimental RMSNorm — multi-row CTA exploration (opt-in)."""
 
 from __future__ import annotations
 

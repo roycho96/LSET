@@ -1,6 +1,4 @@
-"""
-Fused L2 Normalize
-"""
+"""Fused L2 Normalize"""
 
 import torch
 import torch.nn.functional as F
@@ -209,24 +207,12 @@ class FusedL2Normalize(torch.autograd.Function):
 
 
 def fused_l2_normalize(x: Tensor, eps: float = 1e-12) -> Tensor:
-    """Fused L2 normalize — drop-in for F.normalize(x, p=2, dim=1).
-
-    Args:
-        x: (N, D) input tensor (bf16, fp16, or fp32)
-        eps: epsilon for numerical stability
-
-    Returns:
-        (N, D) L2 normalized tensor (same dtype as input)
-    """
+    """Fused L2 normalize — drop-in for F.normalize(x, p=2, dim=1)."""
     return FusedL2Normalize.apply(x, eps)
 
 
 def normalize(x: Tensor, eps: float = 1e-12) -> Tensor:
-    """L2 normalize with automatic Triton dispatch.
-
-    Uses fused Triton kernel when N >= threshold and on CUDA.
-    Falls back to F.normalize otherwise.
-    """
+    """L2 normalize with automatic Triton dispatch."""
     if x.is_cuda and x.dim() == 2 and x.shape[0] >= _FUSED_NORM_THRESHOLD:
         return fused_l2_normalize(x, eps)
     return F.normalize(x, p=2, dim=-1)

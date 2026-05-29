@@ -1,15 +1,4 @@
-"""Wrapper that makes an LSET model compatible with the MTEB v2 evaluation interface.
-
-Usage::
-
-    from lset.eval import LSETMTEBModel
-
-    model = LSETMTEBModel.from_pretrained("~/models/Qwen3-Embedding-0.6B")
-    # Use with mteb.evaluate:
-    import mteb
-    tasks = mteb.get_tasks(tasks=["STSBenchmark"])
-    results = mteb.evaluate(model, tasks)
-"""
+"""Wrapper that makes an LSET model compatible with the MTEB v2 evaluation interface."""
 
 from __future__ import annotations
 

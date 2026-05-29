@@ -5,15 +5,7 @@ import torch.nn as nn
 
 
 class CUDAGraphWrapper:
-    """Captures and replays model forward pass as a CUDA graph.
-
-    Only for padded mode with fixed batch_size and seq_length.
-
-    Usage:
-        wrapper = CUDAGraphWrapper(model, batch_size=8, seq_length=128, device=device)
-        # In training loop:
-        output = wrapper.forward(input_ids, attention_mask)
-    """
+    """Captures and replays model forward pass as a CUDA graph."""
 
     def __init__(
         self,
@@ -55,15 +47,7 @@ class CUDAGraphWrapper:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Run forward pass using captured CUDA graph.
-
-        Args:
-            input_ids: (B, S) must match captured batch_size × seq_length
-            attention_mask: ignored (graph captured without mask for compatibility)
-
-        Returns:
-            dict with "hidden_states" and optionally "lm_logits"
-        """
+        """Run forward pass using captured CUDA graph."""
         # Copy real data into static buffers (same memory addresses)
         self.static_input_ids.copy_(input_ids)
 

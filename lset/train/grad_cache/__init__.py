@@ -1,12 +1,4 @@
-"""GradCache training infrastructure.
-
-Public entry points:
-
-  - ``GradCacheWrapper``      — 3-step contrastive batch scaler.
-  - ``MinibatchBackward``     — Basic / DDP / FSDP2 / DeepSpeed backward runtime.
-  - ``plan_minibatches``      — split padded/packed batch into ``[(begin, end), ...]``.
-  - ``RandContext``           — snapshot/restore RNG across Step-1 and Step-3.
-"""
+"""GradCache training infrastructure."""
 
 from lset.train.grad_cache.minibatch_backward import BasicMinibatchBackward
 from lset.train.grad_cache.minibatch_backward import DDPMinibatchBackward

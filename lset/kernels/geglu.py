@@ -1,13 +1,4 @@
-"""Fused GeGLU activation — single Triton kernel for gelu_tanh(gate) * up.
-
-Same structure as FusedSwiGLU but uses GELU-tanh instead of SiLU:
-  SwiGLU:  silu(gate) * up = gate * sigmoid(gate) * up
-  GeGLU:   gelu_tanh(gate) * up
-
-gelu_tanh(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-
-Used by Gemma3 (EmbeddingGemma) which uses GELU-tanh gated MLP.
-"""
+"""Fused GeGLU activation — single Triton kernel for gelu_tanh(gate) * up."""
 
 import math
 
@@ -68,16 +59,7 @@ def _geglu_bwd_kernel(
     N,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Backward for GeGLU.
-
-    Forward: out = gelu_tanh(gate) * up
-    d_out/d_up = gelu_tanh(gate)
-    d_out/d_gate = up * d_gelu_tanh/d_gate
-
-    d_gelu_tanh(x)/dx = 0.5 * (1 + tanh(z)) + 0.5 * x * (1 - tanh(z)^2) * dz/dx
-    where z = sqrt(2/pi) * (x + 0.044715 * x^3)
-    dz/dx = sqrt(2/pi) * (1 + 3 * 0.044715 * x^2)
-    """
+    """Backward for GeGLU."""
     pid = tl.program_id(0)
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < N

@@ -1,9 +1,4 @@
-"""Llama transformer block — same structure as Qwen3 (pre-norm RMSNorm).
-
-Returns ``(mlp_out, residual)`` so ``LlamaDecoder`` can fuse the block-boundary
-residual add with the next block's ``input_layernorm``. See ``Qwen3Block`` for
-the full rationale.
-"""
+"""Llama transformer block — same structure as Qwen3 (pre-norm RMSNorm)."""
 
 from __future__ import annotations
 

@@ -1,8 +1,4 @@
-"""Llama decoder model for embedding.
-
-Llama-Nemotron-Embed is a bidirectional Llama — causal mask removed.
-Uses mean pooling (right-padded) instead of Qwen3's last-token pooling.
-"""
+"""Llama decoder model for embedding."""
 
 from __future__ import annotations
 

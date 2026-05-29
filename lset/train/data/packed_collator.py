@@ -6,16 +6,7 @@ from lset.train.data.packing import pack_sequences
 
 
 class PackedCollator:
-    """Collates samples into packed format (no padding).
-
-    Query sequences packed together, doc sequences packed together.
-
-    Returns:
-        {
-            "query": {"input_ids": (total_q_tokens,), "cu_seqlens": (num_q+1,), ...},
-            "doc": {"input_ids": (total_d_tokens,), "cu_seqlens": (num_d+1,), ...},
-        }
-    """
+    """Collates samples into packed format (no padding)."""
 
     def __call__(self, batch: list[dict]) -> dict:
         queries = [s["query"]["input_ids"] for s in batch]
@@ -38,18 +29,7 @@ def _pack_fixed_budget(
     token_budget: int,
     pad_token_id: int,
 ) -> dict:
-    """Pack sequences into a fixed-size 1D tensor.
-
-    Sequences are added greedily until the budget is exhausted. Any sequence
-    whose tokens would exceed the remaining budget is skipped. The tail of
-    the tensor is filled with ``pad_token_id``; these padding tokens sit
-    outside all ``cu_seqlens`` boundaries so flash_attn_varlen_func and
-    pooling never see them.
-
-    Returns the same dict layout as :func:`pack_sequences` plus a
-    ``"num_sequences"`` key indicating how many sequences were actually
-    packed (useful for downstream label slicing).
-    """
+    """Pack sequences into a fixed-size 1D tensor."""
     all_ids: list[int] = []
     all_positions: list[int] = []
     cu_seqlens: list[int] = [0]
@@ -88,24 +68,7 @@ def _pack_fixed_budget(
 
 
 class FixedBudgetPackedCollator:
-    """Packs sequences into a fixed-size tensor for CUDA Graph compatibility.
-
-    CUDA Graphs require static tensor shapes across replays. Standard packed
-    collation produces variable-length tensors. This collator guarantees every
-    output ``input_ids`` tensor has shape ``(token_budget,)`` by:
-
-    * Greedily packing sequences until the budget is reached.
-    * Dropping sequences that do not fit (truncation at sequence granularity).
-    * Padding the remainder with ``pad_token_id``.
-
-    The padding tokens sit *after* the last ``cu_seqlens`` boundary, so
-    ``flash_attn_varlen_func`` and pooling kernels never attend to or pool
-    over them — the extra memory is the only cost.
-
-    Args:
-        token_budget: Fixed total token count for each packed tensor.
-        pad_token_id: Token id used for padding beyond packed sequences.
-    """
+    """Packs sequences into a fixed-size tensor for CUDA Graph compatibility."""
 
     def __init__(self, token_budget: int, pad_token_id: int = 0):
         self.token_budget = token_budget

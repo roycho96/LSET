@@ -1,17 +1,4 @@
-"""
-SM100 (Blackwell) Fused Contrastive Loss Kernel
-
-CUDA C++ kernel using SM100-specific optimizations for the fused contrastive
-loss Q@K^T tiled computation. Uses multi-stage async pipeline, optimized tile
-sizes, and SM100's larger shared memory / register file.
-
-Architecture:
-  - Forward: tiled Q@K^T with online LogSumExp (same algorithm as Triton kernel)
-  - Backward: dQ and dK kernels with score recomputation
-  - SM100-only: graceful fallback to Triton kernel on older GPUs
-
-Public API matches loss.py's FusedDenseLoss interface.
-"""
+"""SM100 (Blackwell) Fused Contrastive Loss Kernel"""
 
 import logging
 import os
@@ -324,21 +311,7 @@ def fused_dense_loss_sm100(
     pos_counts: Optional[Tensor] = None,
     neg_counts: Optional[Tensor] = None,
 ) -> Tensor:
-    """
-    SM100-optimized fused contrastive loss.
-
-    Same interface as fused_dense_loss() in loss.py.
-    Only activates on SM100+ GPUs. Falls back gracefully if extension
-    fails to load.
-
-    Args:
-        q: [Q, D] query embeddings (normalized), bf16
-        k: [K, D] document embeddings (normalized), bf16
-        labels: [Q, K] int8 labels (>0: pos, 0: neg, -1: ignore)
-        scale: temperature scale
-        loss_type: "multi", "soft", "cross"
-        pos_qi, pos_di, pos_counts, neg_counts: optional precomputed indices
-    """
+    """SM100-optimized fused contrastive loss."""
     loss_type_int = _LOSS_TYPE_MAP.get(loss_type, LOSS_MULTI)
     q_scaled = q * scale
 

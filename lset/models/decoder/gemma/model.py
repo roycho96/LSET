@@ -1,14 +1,4 @@
-"""EmbeddingGemma model — Gemma3 backbone with bidirectional attention.
-
-Key differences from Qwen3/Llama:
-- GELU-tanh gated MLP (not SiLU)
-- Sliding window attention (512) on most layers, full on every 6th
-- QK-norm
-- Pre and post feedforward layer norms (4 norms per block)
-- query_pre_attn_scalar (custom attention scaling)
-- Two different RoPE base frequencies (global vs local)
-- Post-pooling linear projection head (768→3072→768)
-"""
+"""EmbeddingGemma model — Gemma3 backbone with bidirectional attention."""
 
 from __future__ import annotations
 

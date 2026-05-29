@@ -13,12 +13,7 @@ from lset.models.pooling import pool
 
 
 def _expand_labels_for_gather(labels: torch.Tensor, total_q: int, total_d: int, fill: float = 0.0) -> torch.Tensor:
-    """Expand local label matrix to match gathered embedding sizes.
-
-    When using gather_with_grad in multi-GPU, embeddings grow but labels stay local.
-    This creates a full (total_q, total_d) matrix where the local labels are placed
-    in the correct block-diagonal position, and other entries are filled with `fill`.
-    """
+    """Expand local label matrix to match gathered embedding sizes."""
     local_q, local_d = labels.shape
     if local_q == total_q and local_d == total_d:
         return labels

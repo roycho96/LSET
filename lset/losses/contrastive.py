@@ -1,19 +1,4 @@
-"""Label-matrix-aware contrastive loss supporting multi-positive and soft labels.
-
-Two objectives live here:
-
-- Hard labels (``scores=None``): multi-positive InfoNCE.
-    ``loss = -mean_pos(sim) + logsumexp(sim over non-ignore)``
-- Soft labels (``scores`` given): soft-label cross-entropy.
-    ``loss = logsumexp(sim) - sum(normalized_target * sim)``
-    This is the mathematically correct soft CE (H(target, pred_softmax))
-    — not ``softmax(teacher_scores/τ)`` against predictions, which is a
-    different objective.
-
-Queries with no valid columns (all -1) are dropped from the mean. An
-all-ignored batch returns a grad-carrying zero to keep the training loop
-from NaN-ing.
-"""
+"""Label-matrix-aware contrastive loss supporting multi-positive and soft labels."""
 
 from __future__ import annotations
 
@@ -33,19 +18,7 @@ def contrastive_loss(
     temperature: float = 0.02,
     scores: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Contrastive loss with a (Q, K) label matrix.
-
-    Args:
-        query_embeds: (Q, D) normalized query embeddings.
-        doc_embeds:   (K, D) normalized doc embeddings.
-        labels:       (Q, K) — ``1`` positive, ``0`` negative/in-batch-neg,
-                      ``-1`` ignore.
-        temperature:  scalar or 0-dim tensor (``1/scale``).
-        scores:       (Q, K) optional soft targets for distillation.
-
-    Returns:
-        Scalar loss.
-    """
+    """Contrastive loss with a (Q, K) label matrix."""
     sim = (query_embeds @ doc_embeds.T) / temperature  # (Q, K)
     ignore_mask = labels < 0                           # True where labels == -1
     valid_mask = ~ignore_mask

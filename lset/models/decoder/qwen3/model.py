@@ -32,11 +32,7 @@ class Qwen3Decoder(nn.Module):
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: int | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Unified forward supporting both padded and packed modes.
-
-        Padded mode (default): input_ids [B, S], attention_mask [B, S].
-        Packed mode: input_ids (T,), position_ids (T,), cu_seqlens (N+1,), max_seqlen int.
-        """
+        """Unified forward supporting both padded and packed modes."""
         if cu_seqlens is not None:
             return self._forward_packed(input_ids, position_ids, cu_seqlens, max_seqlen, return_lm_logits)
         return self._forward_padded(input_ids, attention_mask, return_lm_logits)

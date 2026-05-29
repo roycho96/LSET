@@ -51,12 +51,7 @@ def _fuse_qkv_weights(state_dict: dict) -> dict:
 
 
 def load_qwen3_weights(model_path: str | Path, fused_projections: bool = False) -> dict:
-    """Load Qwen3 weights from safetensors and convert keys.
-
-    Args:
-        model_path: Path to model directory with safetensors files.
-        fused_projections: If True, fuse Q/K/V into qkv_proj and gate/up into gate_up_proj.
-    """
+    """Load Qwen3 weights from safetensors and convert keys."""
     model_path = Path(model_path)
     safetensor_files = sorted(model_path.glob("*.safetensors"))
     if not safetensor_files:

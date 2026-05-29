@@ -54,11 +54,7 @@ def _load_weights(model_path: Path) -> dict:
 
 
 def load_bert_weights(model_path: str | Path, fused_projections: bool = False) -> dict:
-    """Load BERT weights and convert keys to LSET format.
-
-    BERT HF keys use 'bert.' prefix and 'gamma'/'beta' for LayerNorm.
-    Maps to our structure: embeddings.*, layers.{i}.attention.*, layers.{i}.mlp.*
-    """
+    """Load BERT weights and convert keys to LSET format."""
     model_path = Path(model_path)
     hf = _load_weights(model_path)
 
@@ -99,11 +95,7 @@ def load_bert_weights(model_path: str | Path, fused_projections: bool = False) -
 
 
 def load_xlm_roberta_weights(model_path: str | Path, fused_projections: bool = False) -> dict:
-    """Load XLM-RoBERTa weights and convert keys to LSET format.
-
-    XLM-RoBERTa uses same structure as BERT but without 'bert.' prefix,
-    and standard weight/bias naming for LayerNorm.
-    """
+    """Load XLM-RoBERTa weights and convert keys to LSET format."""
     model_path = Path(model_path)
     hf = _load_weights(model_path)
 

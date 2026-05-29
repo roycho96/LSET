@@ -1,13 +1,4 @@
-"""Fused Pool + L2 Normalize kernels.
-
-Combines pooling (last_token, mean, cls) with L2 normalization into fewer
-kernel launches.
-
-For last_token/cls: single kernel reads hidden at gathered index and normalizes.
-For mean: scatter_add_ stays separate; fuse divide-by-length + normalize.
-
-Saves: 1 full (num_seqs, D) read+write per encode call.
-"""
+"""Fused Pool + L2 Normalize kernels."""
 
 import torch
 import triton
@@ -346,17 +337,7 @@ def fused_pool_normalize(
     strategy: str = "last_token",
     eps: float = 1e-12,
 ) -> Tensor:
-    """Fused packed pooling + L2 normalize.
-
-    Args:
-        hidden_states: (T, D) packed hidden states
-        cu_seqlens: (num_seqs + 1,) int32
-        strategy: "last_token" | "cls" | "mean"
-        eps: epsilon for numerical stability
-
-    Returns:
-        (num_seqs, D) L2-normalized embeddings
-    """
+    """Fused packed pooling + L2 normalize."""
     num_seqs = cu_seqlens.shape[0] - 1
     T = hidden_states.shape[0]
     D = hidden_states.shape[-1]

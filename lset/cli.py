@@ -1,9 +1,4 @@
-"""LSET CLI entrypoint.
-
-Usage:
-    lset train --config configs/qwen3_embed_quick.yaml [overrides...]
-    lset eval  --config configs/qwen3_embed_quick.yaml [overrides...]
-"""
+"""LSET CLI entrypoint."""
 
 from __future__ import annotations
 

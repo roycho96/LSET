@@ -1,8 +1,4 @@
-"""YAML config system for LSET.
-
-Loads configuration from YAML files with CLI override support.
-Every training/eval option is represented as a typed dataclass field.
-"""
+"""YAML config system for LSET."""
 
 from __future__ import annotations
 
@@ -219,13 +215,7 @@ class LSETConfig:
     # ── CLI Override ──
 
     def apply_overrides(self, overrides: list[tuple[str, str]]):
-        """Apply CLI overrides in dotted notation.
-
-        Examples:
-            ("training.batch_size", "16")
-            ("packing.enabled", "true")
-            ("lora.targets", "q_proj,v_proj")
-        """
+        """Apply CLI overrides in dotted notation."""
         for key, raw_value in overrides:
             parts = key.split(".", 1)
             if len(parts) != 2:
@@ -277,11 +267,7 @@ class LSETConfig:
 
 
 def parse_overrides(args: list[str]) -> list[tuple[str, str]]:
-    """Parse CLI overrides from argument list.
-
-    Input:  ["--config", "x.yaml", "--training.batch_size", "16", "--packing.enabled", "true"]
-    Output: [("training.batch_size", "16"), ("packing.enabled", "true")]
-    """
+    """Parse CLI overrides from argument list."""
     overrides = []
     i = 0
     while i < len(args):

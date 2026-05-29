@@ -1,15 +1,4 @@
-"""Parallelism composition for LSET models.
-
-Supports:
-- FSDP2 only (dp_size > 1, tp_size = 1)
-- TP only (tp_size > 1, dp_size = 1)
-- TP + FSDP2 2D parallelism (tp_size > 1, dp_size > 1)
-
-Application order (following TorchTitan):
-1. TP: parallelize_module (if tp_size > 1)
-2. Activation Checkpointing (optional, selective)
-3. FSDP2: fully_shard bottom-up + forward/backward prefetch
-"""
+"""Parallelism composition for LSET models."""
 
 from __future__ import annotations
 

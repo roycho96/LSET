@@ -1,17 +1,4 @@
-"""BERT / XLM-RoBERTa encoder model.
-
-Supports both BERT and XLM-RoBERTa architectures:
-- Bidirectional attention (no causal mask)
-- Absolute position embeddings (with optional offset for RoBERTa)
-- Post-norm LayerNorm (after residual, not before)
-- GELU MLP (fc1 → GELU → fc2, not SwiGLU)
-- Bias in all projections
-
-Fused kernel optimizations:
-- FusedLayerNorm (embedding layer norm)
-- FusedResidualLayerNorm (post-norm in attention and MLP)
-- Fused QKV projection (optional)
-"""
+"""BERT / XLM-RoBERTa encoder model."""
 
 from __future__ import annotations
 
@@ -212,11 +199,7 @@ class BertEncoder(nn.Module):
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
     ) -> dict[str, torch.Tensor]:
-        """Packed forward for BERT encoder.
-
-        Uses varlen_attn or flash_attn with causal=False when available,
-        falling back to O(T^2) SDPA block-diagonal mask.
-        """
+        """Packed forward for BERT encoder."""
         T = input_ids.shape[0]
 
         # Compute embeddings per-token (no batch dimension)

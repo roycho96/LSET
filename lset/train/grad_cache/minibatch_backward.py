@@ -1,27 +1,4 @@
-"""Minibatch planning + runtime-specific backward policy for GradCache.
-
-``plan_minibatches`` splits a padded or packed batch dict into
-``[(begin, end), ...]`` index ranges. Padded ranges are batch-dim rows;
-packed ranges are sequence indices (convert to token ranges via
-``cu_seqlens``).
-
-``MinibatchBackward`` hides the runtime differences between single-GPU,
-DDP, FSDP2, and DeepSpeed during the Step-3 replay loop:
-
-  - ``BasicMinibatchBackward``       : ``.backward()`` per minibatch.
-  - ``DDPMinibatchBackward``         : ``no_sync()`` around all minibatches,
-                                       manual bucketed all-reduce on finalize
-                                       (only on gradient-accumulation boundary).
-  - ``FSDP2MinibatchBackward``       : ``set_requires_gradient_sync(False)`` for
-                                       all but the last minibatch; enable for the
-                                       last when ``is_ga_boundary`` is True.
-  - ``DeepSpeedMinibatchBackward``   : ``engine.set_gradient_accumulation_boundary``
-                                       + ``engine.backward`` per minibatch.
-
-``align_minibatches`` pads per-rank plans up to the world-max count using
-all_reduce(MAX), so every rank issues the same number of collectives and
-NCCL cannot hang on uneven ``token_budget`` splits.
-"""
+"""Minibatch planning + runtime-specific backward policy for GradCache."""
 
 from __future__ import annotations
 
@@ -59,11 +36,7 @@ def _by_fixed_size(n: int, mini_batch_size: int) -> list[tuple[int, int]]:
 
 
 def _by_token_budget(seq_lengths, token_budget: int) -> list[tuple[int, int]]:
-    """Greedy — accumulate sequences until adding the next would exceed budget.
-
-    A single sequence longer than ``token_budget`` still occupies one minibatch
-    by itself (would-be-split sequences are not chunked here).
-    """
+    """Greedy — accumulate sequences until adding the next would exceed budget."""
     chunks = []
     begin = 0
     current = 0
@@ -85,12 +58,7 @@ def plan_minibatches(
     mini_batch_size: int,
     token_budget: int | None = None,
 ) -> list[tuple[int, int]]:
-    """Split a padded or packed feature dict into ``[(begin, end), ...]``.
-
-    Packed batches (``cu_seqlens`` present) use ``token_budget`` when given,
-    otherwise a fixed sequence count. Padded batches always use fixed size
-    on the batch dimension.
-    """
+    """Split a padded or packed feature dict into ``[(begin, end), ...]``."""
     if "cu_seqlens" in sentence_feature:
         if token_budget is not None:
             return _by_token_budget(_seq_lengths(sentence_feature), token_budget)
@@ -140,12 +108,7 @@ class MinibatchBackward:
         self,
         minibatches_per_feature: list[list[tuple[int, int]]],
     ) -> tuple[list[list[tuple[int, int]]], list[int]]:
-        """Pad each feature's per-rank plan to the world-max via all_reduce(MAX).
-
-        Dummy minibatches reuse the last valid range so the forward still runs
-        on valid token indices (callers must ignore gradients at dummy slots).
-        Returns (aligned_plans, num_valid_per_feature).
-        """
+        """Pad each feature's per-rank plan to the world-max via all_reduce(MAX)."""
         num_valid = [len(mbs) for mbs in minibatches_per_feature]
         if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
             return [list(mbs) for mbs in minibatches_per_feature], num_valid
@@ -171,11 +134,7 @@ class BasicMinibatchBackward(MinibatchBackward):
 
 
 class DDPMinibatchBackward(MinibatchBackward):
-    """Suppress DDP reducer during replay, manual bucketed all-reduce on finalize.
-
-    ``is_ga_boundary`` gates the finalize all-reduce — on non-boundary
-    micro-steps, leave accumulated grads local for the next micro-step.
-    """
+    """Suppress DDP reducer during replay, manual bucketed all-reduce on finalize."""
 
     def __init__(self, ddp_model: nn.Module, is_ga_boundary: bool):
         self.ddp_model = ddp_model
@@ -218,12 +177,7 @@ class DDPMinibatchBackward(MinibatchBackward):
 
 
 class FSDP2MinibatchBackward(MinibatchBackward):
-    """FSDP2 — accumulate with sync off, flip on for the last minibatch only.
-
-    FSDP2 reduces all accumulated grads on the backward that has sync enabled,
-    so enabling it only for the final minibatch keeps the replay loop's per-
-    minibatch all-reduces off while still syncing at the GA boundary.
-    """
+    """FSDP2 — accumulate with sync off, flip on for the last minibatch only."""
 
     def __init__(self, fsdp_module: nn.Module, is_ga_boundary: bool):
         self.fsdp_module = fsdp_module
@@ -261,12 +215,7 @@ class FSDP2MinibatchBackward(MinibatchBackward):
 
 
 class DeepSpeedMinibatchBackward(MinibatchBackward):
-    """DeepSpeed — ``set_gradient_accumulation_boundary`` + ``engine.backward``.
-
-    Intermediate minibatches call the boundary API with False so ZeRO-2
-    reduce-scatter and ZeRO-3 param release are suppressed; only the final
-    minibatch at a GA boundary flips it to True.
-    """
+    """DeepSpeed — ``set_gradient_accumulation_boundary`` + ``engine.backward``."""
 
     def __init__(self, engine, is_ga_boundary: bool = True):
         self.engine = engine

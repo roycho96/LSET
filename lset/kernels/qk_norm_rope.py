@@ -1,25 +1,4 @@
-"""Fused QK-Norm + RoPE — single Triton kernel for Qwen3/Gemma-style attention.
-
-Replaces the back-to-back sequence
-
-    q = q_norm(q)          # RMSNorm kernel  (read Q, write Q')
-    k = k_norm(k)          # RMSNorm kernel  (read K, write K')
-    q, k = rope(q, k, ...) # RoPE kernel     (read Q', K', write Q'', K'')
-
-with a single kernel that reads Q and K once, writes Q'' and K'' once, and
-uses shared ``cos/sin`` registers across all Q and K heads.
-
-Layout follows the RoPE kernel in ``rope.py`` (per-token grid, 2D
-``(n_heads, hd/2)`` head tile). The norm adds an extra reduction per head
-row (``sum(q_l² + q_r²)/hd``) and a weight multiply before the rotation.
-
-Launches saved per attention: **2** (was 3: q_norm + k_norm + rope → 1).
-HBM round trips saved: **full Q and K intermediates** never materialized.
-
-The kernel supports a ``DO_NORM`` constexpr flag so Llama-style attention
-(no qk_norm) can share the exact same kernel for the rope-only path. The
-flag collapses the norm prologue at compile time.
-"""
+"""Fused QK-Norm + RoPE — single Triton kernel for Qwen3/Gemma-style attention."""
 
 from __future__ import annotations
 
@@ -183,24 +162,7 @@ def _qk_norm_rope_bwd_kernel(
     pad_hd_half: tl.constexpr,
     DO_NORM: tl.constexpr,
 ):
-    """Backward through ``RoPE ∘ (weight × RMSNorm)``.
-
-    Per-row (per-token × per-head) formulas:
-
-      Let hd = head_dim, q_hat = q * rstd (pre-weight norm output),
-          g = grad_q_rope, w = q_weight.
-
-      Step 1 (rope inverse):
-          gs_l = g_l * cos + g_r * sin   (gradient of weight*q_hat, left half)
-          gs_r = -g_l * sin + g_r * cos  (right half)
-
-      Step 2 (weight mul chain rule):
-          m = gs * w   (in accum dtype, element-wise with broadcast)
-          grad_q_weight = sum over tokens, heads of (gs * q_hat)
-
-      Step 3 (RMS norm inverse):
-          grad_q = rstd * (m - q_hat * mean(m * q_hat over hd))
-    """
+    """Backward through ``RoPE ∘ (weight × RMSNorm)``."""
     block_id = tl.program_id(0).to(tl.int64)
     row_start = block_id * rows_per_program
     row_end = tl.minimum((block_id + 1) * rows_per_program, N)
@@ -527,16 +489,7 @@ def fused_qk_norm_rope(
     sin: Tensor,
     eps: float = 1e-6,
 ) -> tuple[Tensor, Tensor]:
-    """Single-kernel ``RoPE(weight * RMSNorm(q))`` — force Triton path (CUDA only).
-
-    Args:
-        q: ``(B, H_q, S, D)`` or ``(T, H_q, D)``.
-        k: ``(B, H_k, S, D)`` or ``(T, H_k, D)``.
-        q_weight, k_weight: ``(D,)`` per-head-dim scale. Gemma users pass
-            ``1.0 + self.weight`` here.
-        cos, sin: same layouts supported by ``lset.kernels.rope.apply_rotary_pos_emb``.
-        eps: RMSNorm epsilon.
-    """
+    """Single-kernel ``RoPE(weight * RMSNorm(q, k))`` — force Triton path (CUDA only)."""
     return _FusedQKNormRoPEFn.apply(q, k, q_weight, k_weight, cos, sin, eps, True)
 
 
@@ -582,8 +535,7 @@ def qk_norm_rope(
     sin: Tensor,
     eps: float = 1e-6,
 ) -> tuple[Tensor, Tensor]:
-    """Auto-dispatch wrapper — Triton path on CUDA, eager fallback on CPU or
-    when ``LSET_DISABLE_FUSED_QK_NORM_ROPE=1`` is set (for A/B benchmarking)."""
+    """Auto-dispatch: Triton on CUDA, eager fallback on CPU or LSET_DISABLE_FUSED_QK_NORM_ROPE=1."""
     import os
 
     if q.is_cuda and os.environ.get("LSET_DISABLE_FUSED_QK_NORM_ROPE") != "1":

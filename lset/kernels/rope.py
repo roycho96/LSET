@@ -1,19 +1,4 @@
-"""Fused Q+K Rotary Position Embedding — single Triton kernel.
-
-One program per token handles Q and K together. ``cos/sin`` are loaded once
-from HBM and shared across all Q heads (``n_qh``) and K heads (``n_kh``) via
-a 2D register tile ``(pad_n_qh, pad_hd/2)``.
-
-The kernel writes in-place into a freshly-allocated contiguous buffer (the
-output of ``transpose(1, 2).contiguous()`` or ``clone()``). Callers never see
-their input mutated — we always own the buffer we write to. This matches
-the Liger-Kernel pattern and avoids the extra ``empty_like`` + post-kernel
-``contiguous()`` round-trip used by the previous LSET wrapper.
-
-Shape support (cos/sin is broadcast along the leading dims via ``pid % S_cos``):
-  - 4D padded:  q/k ``(B, H, S, D)``, cos/sin ``(1, 1, S, D)``
-  - 3D packed:  q/k ``(T, H, D)``,   cos/sin ``(T, 1, D)``
-"""
+"""Fused Q+K Rotary Position Embedding — single Triton kernel."""
 
 from __future__ import annotations
 
@@ -39,11 +24,7 @@ def _rope_qk_kernel(
     pad_hd_half: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
 ):
-    """Combined Q/K RoPE, in-place on Q and K.
-
-      Forward:  y1 = x1*c − x2*s, y2 = x1*s + x2*c
-      Backward: dx1 = dy1*c + dy2*s, dx2 = −dy1*s + dy2*c
-    """
+    """Combined Q/K RoPE, in-place on Q and K."""
     pid = tl.program_id(0).to(tl.int64)
     if pid >= N:
         return
@@ -95,14 +76,7 @@ def _rope_qk_kernel(
 
 
 def _launch_rope_qk(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor, *, backward: bool):
-    """Run ``_rope_qk_kernel`` over Q and K in-place on a fresh buffer.
-
-    For 4D ``(B, H, S, D)`` we first ``transpose(1, 2).contiguous()`` to the
-    physical ``(B, S, H, D)`` layout — ``transpose`` makes the tensor
-    non-contiguous so ``contiguous()`` always allocates a fresh buffer we
-    own. For 3D ``(N, H, D)`` inputs that are already contiguous, we clone
-    so we never mutate the caller's tensor.
-    """
+    """Run ``_rope_qk_kernel`` over Q and K in-place on a fresh buffer."""
     is_padded = q.dim() == 4
     if is_padded:
         B, H_q, S, D = q.shape
@@ -153,11 +127,7 @@ def _launch_rope_qk(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor, *, backward:
 
 
 class FusedRoPEQK(torch.autograd.Function):
-    """Combined Q/K RoPE autograd Function.
-
-    Forward and backward both use ``_rope_qk_kernel`` with a ``BACKWARD_PASS``
-    flag — no saved activations beyond cos/sin.
-    """
+    """Combined Q/K RoPE autograd Function."""
 
     @staticmethod
     def forward(ctx, q, k, cos, sin):
@@ -181,11 +151,7 @@ def fused_apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
 
 
 def apply_rotary_pos_emb(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor):
-    """RoPE with automatic Triton dispatch.
-
-    Falls back to the eager ``rotate_half`` formula on CPU or very small
-    inputs where the kernel launch overhead dominates.
-    """
+    """RoPE with automatic Triton dispatch."""
     if q.is_cuda:
         T = q.shape[0] if q.dim() == 3 else q.shape[0] * q.shape[2]
         if T >= _FUSED_ROPE_THRESHOLD:
