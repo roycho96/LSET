@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from lset.kernels import geglu as _geglu
 from lset.kernels import residual_rms_norm as _residual_rms_norm
 from lset.kernels import rms_norm as _fused_rms_norm
+from lset.kernels.double_residual_rmsnorm import fused_double_residual_rms_norm as _double_rms
 from lset.kernels.qk_norm_rope import qk_norm_rope as _fused_qk_norm_rope
 from lset.models.decoder.gemma.config import GemmaConfig
 from lset.models.decoder.qwen3.attention import apply_rotary_pos_emb
@@ -200,14 +201,14 @@ class GemmaBlock(nn.Module):
             )
 
         attn_out = self.self_attn(attn_in, cos, sin, attention_mask)
-        attn_out = self.post_attention_layernorm(attn_out)
 
-        # Fused: (residual + attn_out) → pre_feedforward_layernorm.
-        mlp_in, residual = _residual_rms_norm(
-            residual,
+        # Fused: post_attention_layernorm(attn_out) → +residual → pre_feedforward_layernorm.
+        mlp_in, residual = _double_rms(
             attn_out,
+            residual,
+            1.0 + self.post_attention_layernorm.weight,
             1.0 + self.pre_feedforward_layernorm.weight,
-            self.pre_feedforward_layernorm.eps,
+            self.post_attention_layernorm.eps,
         )
 
         mlp_out = self.mlp(mlp_in)

@@ -102,17 +102,40 @@ def train(config: LSETConfig):
         cascade_d_small=config.training.cascade_d_small,
         cascade_K_prime=config.training.cascade_K_prime,
         gc_selective_keep=config.grad_cache.selective_backward_keep,
+        activation_checkpoint=config.activation_checkpoint.enabled,
+        ac_mode=config.activation_checkpoint.mode,
+        ac_ratio=config.activation_checkpoint.ratio,
+        async_tp=config.distributed.async_tp,
     )
 
-    # Compile
+    # Compile per-block, not whole-model: whole-model compile over a sharded
+    # FSDP2 model breaks at shard boundaries, so per-block isolates breaks and
+    # lets the comm paths run eager. dynamic for packed mode (varying seqlen),
+    # else fullgraph for max fusion.
     if config.compile.enabled:
         import torch
 
-        engine.model = torch.compile(
-            engine.model,
-            dynamic=config.compile.dynamic,
-            backend=config.compile.backend,
-        )
+        dynamic = bool(config.compile.dynamic) or bool(config.packing.enabled)
+        fullgraph = not dynamic
+        mode = config.compile.mode  # "reduce-overhead" enables Inductor CUDA graphs
+        layers = getattr(engine.model, "layers", None)
+        if layers is not None:
+            for i in range(len(layers)):
+                layers[i] = torch.compile(
+                    layers[i],
+                    dynamic=dynamic,
+                    fullgraph=fullgraph,
+                    mode=mode,
+                    backend=config.compile.backend,
+                )
+        else:
+            # Fallback for models without ``.layers`` (e.g. encoder-only).
+            engine.model = torch.compile(
+                engine.model,
+                dynamic=dynamic,
+                mode=mode,
+                backend=config.compile.backend,
+            )
 
     engine.train()
 

@@ -80,6 +80,16 @@ class CompileConfig:
     enabled: bool = False
     dynamic: bool = True
     backend: str = "inductor"
+    mode: str = "default"  # "default" | "reduce-overhead" | "max-autotune"
+
+
+@dataclass
+class ActivationCheckpointConfig:
+    """Activation checkpointing on transformer blocks."""
+
+    enabled: bool = False
+    mode: str = "selective"  # "selective" (op-level SAC) | "full"
+    ratio: float = 1.0  # fraction of layers (from the bottom) to checkpoint
 
 
 @dataclass
@@ -105,6 +115,7 @@ class AttentionConfig:
 class DistributedConfig:
     dp_size: int = 1
     tp_size: int = 1
+    async_tp: bool = False  # requires compile.enabled=True
 
 
 @dataclass
@@ -163,6 +174,9 @@ class LSETConfig:
     cuda_graph: CudaGraphConfig = field(default_factory=CudaGraphConfig)
     kernels: KernelsConfig = field(default_factory=KernelsConfig)
     attention: AttentionConfig = field(default_factory=AttentionConfig)
+    activation_checkpoint: ActivationCheckpointConfig = field(
+        default_factory=ActivationCheckpointConfig
+    )
     distributed: DistributedConfig = field(default_factory=DistributedConfig)
     lora: LoraConfig = field(default_factory=LoraConfig)
     qlora: QloraConfig = field(default_factory=QloraConfig)

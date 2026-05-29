@@ -1,15 +1,4 @@
-"""CUDA Graph wrapper for padded-mode training.
-
-Captures the forward pass as a CUDA graph and replays it with near-zero
-CPU launch overhead. Each Python→CUDA kernel launch has ~5-10μs overhead;
-with 28 layers × ~10 kernels = 280 launches, that's ~2ms pure overhead.
-
-Constraints:
-- Padded mode only (fixed tensor shapes required)
-- No dynamic control flow after capture
-- Memory addresses fixed at capture time
-- Incompatible with packed mode, GradCache, torch.compile
-"""
+"""Forward-only CUDA Graph wrapper for padded mode (fixed shapes; inference)."""
 
 import torch
 import torch.nn as nn

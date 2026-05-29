@@ -93,6 +93,12 @@ class TrainingEngine:
         cascade: bool = False,
         cascade_d_small: int = 64,
         cascade_K_prime: int = 256,
+        # Activation checkpointing
+        activation_checkpoint: bool = False,
+        ac_mode: str = "selective",
+        ac_ratio: float = 1.0,
+        # Async-TP (requires torch.compile on the model)
+        async_tp: bool = False,
     ):
         # Validate CUDA graph compatibility
         if cuda_graph:
@@ -156,7 +162,13 @@ class TrainingEngine:
         # Load weights
         state_dict = spec.weight_converter(model_path)
         self.model.load_state_dict(state_dict, strict=True)
-        self.model = self.model.to(device=device, dtype=torch.bfloat16)
+        # Multi-GPU: keep params fp32 and let FSDP2's MixedPrecisionPolicy own
+        # the casting so optimizer state stays fp32. Single-GPU: pre-cast to
+        # bf16 (optimizer state is then bf16 — use multi-GPU for long runs).
+        if needs_dist:
+            self.model = self.model.to(device=device)
+        else:
+            self.model = self.model.to(device=device, dtype=torch.bfloat16)
 
         # Apply FP8 (before TP/FSDP, after weights loaded)
         if fp8:
@@ -198,8 +210,12 @@ class TrainingEngine:
                 dp_size=dp_size,
                 tp_size=tp_size,
                 mp_dtype=torch.bfloat16,
+                activation_checkpoint=activation_checkpoint,
+                ac_mode=ac_mode,
+                ac_ratio=ac_ratio,
                 use_sequence_parallel=not packed,
                 use_lora=self.use_lora,
+                async_tp=async_tp,
             )
             self.model, self.mesh = build_parallel_model(
                 self.model,
@@ -207,8 +223,15 @@ class TrainingEngine:
                 pconfig,
             )
         elif dp_size > 1:
-            # FSDP2 only (legacy path)
+            # FSDP2 only (legacy path) — apply AC first, then shard.
+            if activation_checkpoint:
+                from lset.distributed.parallel import _apply_ac
+                _apply_ac(self.model, ac_ratio, ac_mode)
             self.model, self.mesh = setup_fsdp2(self.model, dp_size)
+        elif activation_checkpoint:
+            # Single-GPU AC path (no FSDP2).
+            from lset.distributed.parallel import _apply_ac
+            _apply_ac(self.model, ac_ratio, ac_mode)
 
         # Task
         self.task = BiEncoderTask(
@@ -356,10 +379,22 @@ class TrainingEngine:
                     neg_batch = None
                     if "neg" in batch:
                         neg_batch = self._to_device(batch["neg"])
-                    out = self.task(self.model, query_batch, doc_batch, neg_batch, labels=labels, scores=scores)
-                    loss = out["loss"]
-                    scaled_loss = loss / self.grad_accum_steps
-                    scaled_loss.backward()
+                    # Skip FSDP2 grad sync on non-boundary micro-steps so grad
+                    # accumulation doesn't reduce-scatter on every backward.
+                    sync_target = self.model if hasattr(self.model, "set_requires_gradient_sync") else None
+                    if sync_target is not None and not is_ga_boundary:
+                        sync_target.set_requires_gradient_sync(False)
+                    try:
+                        out = self.task(
+                            self.model, query_batch, doc_batch, neg_batch,
+                            labels=labels, scores=scores,
+                        )
+                        loss = out["loss"]
+                        scaled_loss = loss / self.grad_accum_steps
+                        scaled_loss.backward()
+                    finally:
+                        if sync_target is not None:
+                            sync_target.set_requires_gradient_sync(True)
 
                 if is_ga_boundary:
                     if self.tp_size > 1:

@@ -42,6 +42,12 @@ class LSETMTEBModel:
         device: str | torch.device = "cuda",
         prompt_name_to_prefix: dict[str, str] | None = None,
         model_name: str = "lset-custom",
+        *,
+        chunked: bool = False,
+        chunk_len: int = 4096,
+        chunk_overlap: int = 128,
+        token_budget: int = 16384,
+        max_pos: int | None = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -51,6 +57,12 @@ class LSETMTEBModel:
         self.device = torch.device(device) if isinstance(device, str) else device
         self.prompt_name_to_prefix = prompt_name_to_prefix or {}
         self._model_name = model_name
+        # Chunked encoder options — enable for long-document retrieval tasks.
+        self.chunked = chunked
+        self.chunk_len = chunk_len
+        self.chunk_overlap = chunk_overlap
+        self.token_budget = token_budget
+        self.max_pos = max_pos
 
         self.model.to(self.device)
         self.model.eval()
@@ -121,6 +133,37 @@ class LSETMTEBModel:
             pt_str = prompt_type.value if hasattr(prompt_type, "value") else str(prompt_type)
             prefix = self.prompt_name_to_prefix.get(pt_str, "")
 
+        if self.chunked and self.pooling == "mean":
+            # Chunked path: token-budget-aware encoder over all sentences.
+            sentences_all: list[str] = []
+            for batch in inputs:
+                if isinstance(batch, dict):
+                    s = batch.get("text", batch.get("sentences", []))
+                elif isinstance(batch, (list, tuple)):
+                    s = list(batch)
+                else:
+                    s = [str(batch)]
+                if prefix:
+                    s = [prefix + x for x in s]
+                sentences_all.extend(s)
+
+            from lset.eval.chunked_encoder import encode_chunked
+
+            def _tokenize_fn(texts):
+                return [e.ids for e in self.tokenizer.encode_batch(texts)]
+
+            return encode_chunked(
+                self.model, _tokenize_fn, pool, sentences_all,
+                device=self.device,
+                pad_id=self._get_pad_token_id(),
+                pooling=self.pooling,
+                normalize=self.normalize,
+                chunk_len=self.chunk_len,
+                overlap=self.chunk_overlap,
+                token_budget=self.token_budget,
+                max_pos=self.max_pos,
+            )
+
         all_embeddings: list[torch.Tensor] = []
 
         for batch in inputs:
@@ -137,7 +180,8 @@ class LSETMTEBModel:
 
             input_ids, attention_mask = self._tokenize(sentences)
 
-            with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            # Model is already bf16, so autocast would be a no-op double-cast.
+            with torch.no_grad():
                 outputs = self.model(input_ids, attention_mask)
                 hidden_states = outputs["hidden_states"]
 
